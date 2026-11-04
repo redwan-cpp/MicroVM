@@ -1,0 +1,23 @@
+# golangci-lint runs many code checkers ("linters") at once. `make lint` uses it.
+version: "2"
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose   # HTTP response bodies must be closed (we talk HTTP to Firecracker)
+    - errorlint   # errors are compared the right way (errors.Is / errors.As)
+    - gosec       # common security mistakes; this is a security project
+    - misspell    # spelling mistakes in comments and strings
+    - revive      # Go style: exported names need doc comments, etc.
+    - unconvert   # pointless type conversions
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      # Group our own packages separately from third-party imports.
+      local-prefixes:
+        - github.com/redwan-cpp/microvm-sandbox

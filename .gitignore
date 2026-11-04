@@ -1,0 +1,32 @@
+# Go build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Guest artifacts: large, rebuilt by scripts in guest/ (never committed)
+/guest/out/
+*.ext4
+*.img
+vmlinux*
+*.snap
+*.mem
+
+# Firecracker / jailer binaries fetched by scripts
+/third_party/firecracker/
+
+# Python (benchmarks, escape tests)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Benchmark raw results (summaries are committed under docs/)
+/bench/results/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
