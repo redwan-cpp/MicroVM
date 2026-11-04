@@ -20,4 +20,4 @@ formatters:
     goimports:
       # Group our own packages separately from third-party imports.
       local-prefixes:
-        - github.com/redwan-cpp/microvm-sandbox
+        - github.com/redwan-cpp/MicroVM

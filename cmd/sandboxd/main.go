@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/redwan-cpp/microvm-sandbox/internal/version"
+	"github.com/redwan-cpp/MicroVM/internal/version"
 )
 
 func main() {

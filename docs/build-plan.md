@@ -26,8 +26,8 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] Threat model v0
 - [x] Learning guide and foundation docs 00–04 (big picture, inside a computer, operating system, terminal, containers vs VMs)
 - [x] Toolchain: Go 1.27, build-essential, mmdebstrap, python3-venv, golangci-lint v2.15.0 (pinned in the Makefile)
-- [x] `go.mod` (`github.com/redwan-cpp/microvm-sandbox`), three program stubs, Makefile, CI workflow, LICENSE, CHANGELOG
-- [ ] Pinned Firecracker + jailer release with checksum check
+- [x] `go.mod` (`github.com/redwan-cpp/MicroVM`), three program stubs, Makefile, CI workflow, LICENSE, CHANGELOG
+- [x] Pinned Firecracker + jailer v1.17.0 with a two-level SHA-256 check (`make firecracker`)
 
 ### Week 1: boot a microVM by hand
 - [ ] `guest/fetch-kernel.sh`: pinned guest kernel, SHA-256 checked

@@ -39,6 +39,7 @@ sandboxctl logs <run-id>
 Requires Linux with KVM and Go 1.27+.
 
 ```bash
+make firecracker  # pinned Firecracker + jailer into third_party/, SHA-256 checked
 make build   # bin/sandboxd, bin/sandboxctl, bin/sandbox-agent
 make test    # unit tests, with the race detector
 make lint    # pinned golangci-lint

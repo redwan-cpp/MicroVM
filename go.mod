@@ -1,3 +1,3 @@
-module github.com/redwan-cpp/microvm-sandbox
+module github.com/redwan-cpp/MicroVM
 
 go 1.27.3

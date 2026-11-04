@@ -3,7 +3,7 @@
 # A Makefile is a list of named jobs ("targets"). `make build` runs the
 # commands under `build:`. Each `## text` comment becomes the help line.
 
-MODULE  := github.com/redwan-cpp/microvm-sandbox
+MODULE  := github.com/redwan-cpp/MicroVM
 
 # Which build is this? Taken from git, then stamped into the programs
 # (see internal/version/version.go).
@@ -21,11 +21,11 @@ TOOLS_BIN     := $(CURDIR)/bin/tools
 GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fmt tools e2e bench clean
+.PHONY: help build test lint fmt tools firecracker e2e bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*## "}; {printf "  make %-7s %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*## "}; {printf "  make %-12s %s\n", $$1, $$2}'
 
 build: ## Build sandboxd, sandboxctl and sandbox-agent into bin/
 	@mkdir -p bin
@@ -47,6 +47,9 @@ $(GOLANGCI_LINT):
 	@mkdir -p $(TOOLS_BIN)
 	GOBIN=$(TOOLS_BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	mv $(TOOLS_BIN)/golangci-lint $@
+
+firecracker: ## Download the pinned Firecracker + jailer (fingerprint-checked)
+	./scripts/fetch-firecracker.sh
 
 e2e: ## Tests with real microVMs (not built yet: week 2)
 	@echo "e2e: skipped, nothing to run yet (arrives in week 2, needs KVM)"
