@@ -112,7 +112,8 @@ $(PROTOC_GEN_GO_GRPC):
 firecracker: ## Download the pinned Firecracker + jailer (fingerprint-checked)
 	./scripts/fetch-firecracker.sh
 
-guest: ## Download the guest kernel and build the guest root disk (no sudo)
+# The root disk contains bin/sandbox-agent, so build it first.
+guest: build ## Download the guest kernel and build the guest root disk (no sudo)
 	./guest/fetch-kernel.sh
 	./guest/build-rootfs.sh
 

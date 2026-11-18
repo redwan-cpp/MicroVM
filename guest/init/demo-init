@@ -2,11 +2,17 @@
 # demo-init: the first program the guest kernel starts (PID 1).
 #
 # On a normal Linux machine PID 1 is systemd or OpenRC. Our microVM needs
-# none of that: it starts, runs one job and stops. From week 2 this job
-# belongs to sandbox-agent; until then this small shell script stands in.
+# none of that: it starts, does one job and stops. Which job depends on the
+# kernel command line, whose unknown key=value words the kernel hands to
+# PID 1 as environment variables:
 #
-# Lines starting with "@@" are markers for scripts/boot-vm.sh on the host.
-# It hides them and uses them to time the boot and read the exit code.
+#   sandbox_mode=agent   start sandbox-agent, which takes commands from the
+#                        host over vsock (sandboxd, `make e2e`)
+#   sandbox_cmd_b64=...  run one shell command (`make boot -- ...`)
+#   neither              print a few facts about the VM (`make boot`)
+#
+# Lines starting with "@@" are markers for the host. scripts/boot-vm.sh
+# hides them and uses them to time the boot and read the exit code.
 
 echo "@@guest-init-started@@"
 
@@ -18,7 +24,17 @@ mount -t tmpfs -o size=16m tmpfs /tmp       # the root disk is read-only
 hostname microvm
 export HOME=/root LS_COLORS=none # plain output on the serial console
 
-if [ -n "${sandbox_cmd_b64:-}" ]; then
+if [ "${sandbox_mode:-}" = "agent" ]; then
+  # Run the agent in the foreground. This shell stays PID 1, and while it
+  # waits for the agent it also collects ("reaps") every orphaned process
+  # that ends: processes whose parent died are handed to PID 1, and without
+  # this they would stay behind as zombies. If the agent ever exits (or the
+  # code it runs kills it), we power off below, and the host sees the VM
+  # end.
+  echo "@@agent-starting@@"
+  /usr/local/bin/sandbox-agent
+  echo "@@agent-exited=$?@@"
+elif [ -n "${sandbox_cmd_b64:-}" ]; then
   # The host passed a command (base64, because the kernel command line
   # splits on spaces). Run it, then report its exit code.
   sh -c "$(echo "${sandbox_cmd_b64}" | base64 -d)"
