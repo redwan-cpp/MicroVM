@@ -67,18 +67,28 @@ func fakeFirecracker(ignoreSIGTERM bool) {
 	_ = srv.Serve(lis)
 }
 
-// startFake starts the fake in the given mode, with TMPDIR pointing at a
-// test folder so the run folder can be checked afterwards.
+// startFake starts the fake in the given mode, with a fresh run folder in
+// a test folder, so what is left can be checked afterwards.
 func startFake(t *testing.T, mode string) (*Process, string, error) {
 	t.Helper()
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
 	t.Setenv(fakeEnv, mode)
-	p, err := Start(t.Context(), Config{Binary: os.Args[0]})
+	p, err := Start(t.Context(), Config{Binary: os.Args[0], RunDir: newRunDir(t, tmp)})
 	if p != nil {
 		t.Cleanup(func() { _ = p.Stop() })
 	}
 	return p, tmp, err
+}
+
+// newRunDir creates a private run folder in parent, like
+// state.Root.NewRunDir.
+func newRunDir(t *testing.T, parent string) string {
+	t.Helper()
+	dir := filepath.Join(parent, "r-test")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestProcessStartAndStop(t *testing.T) {
@@ -87,8 +97,8 @@ func TestProcessStartAndStop(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if !strings.HasPrefix(p.Dir(), filepath.Join(tmp, "mvm-")) {
-		t.Errorf("run folder %s, want it in %s with prefix mvm-", p.Dir(), tmp)
+	if p.Dir() != filepath.Join(tmp, "r-test") {
+		t.Errorf("run folder %s, want the one from the Config, %s", p.Dir(), filepath.Join(tmp, "r-test"))
 	}
 	if info, err := os.Stat(p.Dir()); err != nil || info.Mode().Perm() != 0o700 {
 		t.Errorf("run folder: %v, %v; want mode 0700", info, err)
@@ -145,12 +155,17 @@ func TestProcessStartFailsWhenFirecrackerExits(t *testing.T) {
 
 func TestProcessStartFailsWithoutBinary(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	_, err := Start(t.Context(), Config{Binary: filepath.Join(tmp, "no-firecracker-here")})
+	_, err := Start(t.Context(), Config{Binary: filepath.Join(tmp, "no-firecracker-here"), RunDir: newRunDir(t, tmp)})
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("err = %v, want a not-found error", err)
 	}
 	assertEmpty(t, tmp)
+}
+
+func TestProcessStartNeedsARunDir(t *testing.T) {
+	if _, err := Start(t.Context(), Config{Binary: os.Args[0]}); err == nil {
+		t.Error("Start without a RunDir succeeded, want an error")
+	}
 }
 
 // assertGone checks that the process has exited and its folder is deleted.

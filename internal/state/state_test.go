@@ -1,0 +1,156 @@
+package state
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"golang.org/x/sys/unix"
+)
+
+func TestOpenCreatesPrivateFolders(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	r, err := Open(dir, Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for _, sub := range []string{r.Dir(), r.SnapshotsDir(), r.RunsDir(), r.JailDir()} {
+		info, err := os.Stat(sub)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Errorf("%s: %v, %v; want a folder with mode 0700", sub, info, err)
+		}
+	}
+	// A second Open of the same folder is fine.
+	if _, err := Open(dir, Options{}); err != nil {
+		t.Errorf("second Open: %v", err)
+	}
+}
+
+func TestOpenMakesThePathAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir())
+	r, err := Open("state", Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !filepath.IsAbs(r.Dir()) {
+		t.Errorf("Dir() = %q, want an absolute path", r.Dir())
+	}
+}
+
+func TestOpenRefusesFoldersOnDifferentFilesystems(t *testing.T) {
+	// /dev/shm is its own (in-memory) filesystem on Linux. A jail/ that is
+	// really a link to a folder there must be refused.
+	other, err := os.MkdirTemp("/dev/shm", "state-test-")
+	if err != nil {
+		t.Skipf("no /dev/shm: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(other) })
+	dir := t.TempDir()
+	var a, b unix.Stat_t
+	if unix.Stat(dir, &a) != nil || unix.Stat(other, &b) != nil || a.Dev == b.Dev {
+		t.Skip("the test folder and /dev/shm are on the same filesystem here")
+	}
+	if err := os.Symlink(other, filepath.Join(dir, "jail")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Open(dir, Options{})
+	if err == nil || !strings.Contains(err.Error(), "different filesystems") {
+		t.Errorf("err = %v, want a different-filesystems error", err)
+	}
+}
+
+func TestCheckSocketPaths(t *testing.T) {
+	short := "/srv/state"
+	if err := checkSocketPaths(short+"/runs", short+"/jail"); err != nil {
+		t.Errorf("short paths: %v", err)
+	}
+
+	// The jail path is the longer one: firecracker/<id>/root/api.sock.
+	// Find the longest jail folder that still fits, then go one over.
+	room := maxSocketPath - len("/firecracker/") - IDLen - len("/root/api.sock")
+	fits := "/" + strings.Repeat("j", room-1)
+	if err := checkSocketPaths("/r", fits); err != nil {
+		t.Errorf("jail folder of %d bytes: %v, want it to fit exactly", len(fits), err)
+	}
+	if err := checkSocketPaths("/r", fits+"j"); err == nil {
+		t.Errorf("jail folder of %d bytes: no error, want one", len(fits)+1)
+	}
+}
+
+func TestOpenRefusesALongPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), strings.Repeat("d", 100))
+	_, err := Open(dir, Options{})
+	if err == nil || !strings.Contains(err.Error(), "socket paths") {
+		t.Errorf("err = %v, want a socket path error", err)
+	}
+}
+
+func TestCheckNodev(t *testing.T) {
+	if err := checkNodev("/x", unix.ST_RELATIME); err != nil {
+		t.Errorf("without nodev: %v", err)
+	}
+	if err := checkNodev("/x", unix.ST_NODEV|unix.ST_NOSUID); err == nil {
+		t.Error("with nodev: no error, want one")
+	}
+}
+
+func TestOpenChecksNodevInJailerMode(t *testing.T) {
+	// /dev/shm is mounted nodev on most Linux systems.
+	var sfs unix.Statfs_t
+	if err := unix.Statfs("/dev/shm", &sfs); err != nil || sfs.Flags&unix.ST_NODEV == 0 {
+		t.Skip("/dev/shm is missing or not mounted nodev here")
+	}
+	dir, err := os.MkdirTemp("/dev/shm", "state-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	if _, err := Open(dir, Options{}); err != nil {
+		t.Errorf("rootless Open: %v, want nodev to be fine", err)
+	}
+	if _, err := Open(dir, Options{Jailer: true}); err == nil || !strings.Contains(err.Error(), "nodev") {
+		t.Errorf("jailer Open: %v, want a nodev error", err)
+	}
+}
+
+func TestNewRunDir(t *testing.T) {
+	r, err := Open(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	for range 20 {
+		id, dir, err := r.NewRunDir()
+		if err != nil {
+			t.Fatalf("NewRunDir: %v", err)
+		}
+		if !regexp.MustCompile(`^r-[0-9a-f]{16}$`).MatchString(id) || len(id) != IDLen {
+			t.Errorf("id %q, want r- and 16 hex digits", id)
+		}
+		if dir != filepath.Join(r.RunsDir(), id) {
+			t.Errorf("dir %s, want %s", dir, filepath.Join(r.RunsDir(), id))
+		}
+		if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+			t.Errorf("%s: %v, %v; want mode 0700", dir, info, err)
+		}
+		if seen[id] {
+			t.Errorf("id %s handed out twice", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestDir(t *testing.T) {
+	t.Setenv(EnvVar, "")
+	if got := Dir("/default"); got != "/default" {
+		t.Errorf("Dir = %q without %s, want the default", got, EnvVar)
+	}
+	t.Setenv(EnvVar, "/elsewhere")
+	if got := Dir("/default"); got != "/elsewhere" {
+		t.Errorf("Dir = %q with %s set, want /elsewhere", got, EnvVar)
+	}
+}

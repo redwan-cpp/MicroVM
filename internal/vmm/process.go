@@ -28,6 +28,12 @@ type Config struct {
 	// Binary is the path to the firecracker program, for example
 	// third_party/firecracker/firecracker.
 	Binary string
+	// RunDir is this VM's private run folder, for example a fresh
+	// state.Root.NewRunDir. It must already exist, on the same filesystem
+	// as the snapshot store. It holds the API socket, the vsock socket,
+	// the log and the VM's files. Start takes it over: Stop, or a failed
+	// Start, deletes it with everything inside.
+	RunDir string
 }
 
 // Process is one running Firecracker, with its own private run folder
@@ -49,12 +55,13 @@ type Process struct {
 // waiting for instructions (use Client, then Client().Start). ctx only
 // bounds the start-up; the process keeps running until Stop.
 func Start(ctx context.Context, cfg Config) (*Process, error) {
-	// A fresh private folder per Firecracker, mode 0700 (MkdirTemp's
-	// default): no other user can see or touch the sockets inside. It is
-	// directly in the temp folder (usually /tmp) to keep socket paths short.
-	dir, err := os.MkdirTemp("", "mvm-")
-	if err != nil {
-		return nil, fmt.Errorf("vmm: create run folder: %w", err)
+	// The run folder comes from the caller (a fresh one per VM, mode 0700,
+	// under the state folder's runs/): no other user can see or touch the
+	// sockets inside, and it is on the same filesystem as the snapshot
+	// store, so the VM's files can be hard links.
+	dir := cfg.RunDir
+	if dir == "" {
+		return nil, fmt.Errorf("vmm: Config.RunDir is empty")
 	}
 	p := &Process{
 		dir:       dir,
@@ -71,8 +78,8 @@ func Start(ctx context.Context, cfg Config) (*Process, error) {
 }
 
 func (p *Process) start(ctx context.Context, cfg Config) error {
-	if len(p.VsockPath()) > maxSocketPath {
-		return fmt.Errorf("vmm: run folder path %s is too long for Unix sockets; set TMPDIR to a shorter folder", p.dir)
+	if len(p.APISocketPath()) > maxSocketPath {
+		return fmt.Errorf("vmm: run folder path %s is too long for Unix sockets; use a shorter state folder", p.dir)
 	}
 
 	// Firecracker wants its log file to exist already.

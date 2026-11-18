@@ -26,6 +26,7 @@ import (
 	"github.com/redwan-cpp/MicroVM/internal/agent"
 	"github.com/redwan-cpp/MicroVM/internal/agentclient"
 	agentv1 "github.com/redwan-cpp/MicroVM/internal/gen/sandbox/agent/v1"
+	"github.com/redwan-cpp/MicroVM/internal/state"
 	"github.com/redwan-cpp/MicroVM/internal/vmm"
 	"github.com/redwan-cpp/MicroVM/internal/vsockconn"
 )
@@ -79,6 +80,28 @@ func findArtifacts(t *testing.T) artifacts {
 	return a
 }
 
+// newStateRoot opens a fresh state folder for one test, under guest/out/
+// next to the guest image: the real layout, on the same filesystem as the
+// root disk (never /tmp, which may be another filesystem). Cleanup deletes
+// it.
+func newStateRoot(t *testing.T, a artifacts) *state.Root {
+	t.Helper()
+	dir, err := os.MkdirTemp(filepath.Dir(a.rootfs), "e2e-state-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("delete the test's state folder: %v", err)
+		}
+	})
+	root, err := state.Open(dir, state.Options{})
+	if err != nil {
+		t.Fatalf("open the state folder: %v", err)
+	}
+	return root
+}
+
 // vm is one running microVM with a connected agent.
 type vm struct {
 	proc    *vmm.Process // nil for a VM the test started some other way
@@ -88,12 +111,16 @@ type vm struct {
 
 // bootVM starts Firecracker, configures and starts a VM, and waits until
 // the agent answers. Cleanup stops the VM even if the test fails.
-func bootVM(t *testing.T, a artifacts) *vm {
+func bootVM(t *testing.T, a artifacts, root *state.Root) *vm {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	proc, err := vmm.Start(ctx, vmm.Config{Binary: a.firecracker})
+	_, dir, err := root.NewRunDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc, err := vmm.Start(ctx, vmm.Config{Binary: a.firecracker, RunDir: dir})
 	if err != nil {
 		t.Fatalf("start firecracker: %v", err)
 	}
@@ -212,7 +239,8 @@ func (v *vm) guestProcesses(t *testing.T) []process {
 }
 
 func TestAgentInARealVM(t *testing.T) {
-	v := bootVM(t, findArtifacts(t))
+	a := findArtifacts(t)
+	v := bootVM(t, a, newStateRoot(t, a))
 
 	t.Run("Health", func(t *testing.T) {
 		resp, err := v.agent.Health(t.Context())
