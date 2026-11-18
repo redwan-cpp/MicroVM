@@ -56,6 +56,7 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] Jailer integration (`internal/jailer`, jailer mode in `internal/clone`): chroot per clone, UID drop (70000), cgroup v2 limits per size class, hard-linked read-only memory file, `cgroup.kill` cleanup; its real-VM test runs by hand with sudo (`make e2e-jailer`), never in CI. Two modes, one snapshot: [ADR-0005](adr/0005-rootless-and-jailer-modes.md)
 - [x] `buf breaking` in `make lint` and CI against `origin/main` (`.git#branch=origin/main`, checkout with `fetch-depth: 0`)
 - [x] Learning docs 09 (snapshots and copy-on-write) and 10 (the jailer); threat model: T9 counted in jailer mode only
+- [x] Week-2 review follow-ups: CI tools cache keyed on `go.mod` too, exit code (-1..255) and signal (0..64) checks in `agentclient`, Firecracker's log in the run folder under the state folder, a `LockOSThread` warning on `vmm.Start`
 
 ### Week 4: **Demo 1**
 - [ ] `proto/sandbox.proto` + `sandboxd` gRPC server on `/run/sandboxd/sandboxd.sock`

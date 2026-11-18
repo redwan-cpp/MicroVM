@@ -34,3 +34,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `scripts/boot-vm.sh` removes control characters from guest console lines, accepts only a 1-3 digit exit-code marker, uses a private `mktemp -d` run folder and gives every API call a 5 s timeout.
 - `internal/vmm`: the run folder now comes from the state folder (no longer `/tmp`) and is Firecracker's working directory; every path given to Firecracker is relative. New calls: `Pause`, `Resume`, `CreateSnapshot`, `LoadSnapshot`.
 - Threat model: T9 (VMM escape) is mitigated, and counted in the escape suite, in jailer mode only; rootless mode's exposure is spelled out.
+- `internal/agentclient` refuses an exit code outside -1..255 or a signal outside 0..64 as a protocol error.
+- CI's tools cache is keyed on `go.mod` as well as the Makefile.

@@ -96,6 +96,13 @@ type Process struct {
 // Start launches an empty Firecracker: no VM yet, just the API socket,
 // waiting for instructions (use Client, then Client().Start). ctx only
 // bounds the start-up; the process keeps running until Stop.
+//
+// Do not call Start from a goroutine that has called runtime.LockOSThread
+// and may exit while still locked: Go then ends that OS thread, and the
+// kernel sends Firecracker its parent-death signal (Pdeathsig, below),
+// which belongs to the thread that started it, not to our process. This
+// matters from week 8, when code that enters a network namespace has to
+// lock its thread.
 func Start(ctx context.Context, cfg Config) (*Process, error) {
 	// The run folder comes from the caller (a fresh one per VM, mode 0700,
 	// under the state folder's runs/): no other user can see or touch the
