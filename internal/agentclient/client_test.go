@@ -338,18 +338,24 @@ func (l handshakeListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	return conn, answerConnect(conn)
+}
+
+// answerConnect reads the "CONNECT <port>" line and answers "OK", like
+// Firecracker when the guest port is open. It closes conn on failure.
+func answerConnect(conn net.Conn) error {
 	b := make([]byte, 1)
 	for b[0] != '\n' { // read "CONNECT 1024\n" byte by byte
 		if _, err := conn.Read(b); err != nil {
 			_ = conn.Close()
-			return nil, err
+			return err
 		}
 	}
 	if _, err := io.WriteString(conn, "OK 1\n"); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return err
 	}
-	return conn, nil
+	return nil
 }
 
 func TestDialOverAVsockSocket(t *testing.T) {

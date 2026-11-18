@@ -38,7 +38,7 @@ TOOLS              := $(GOLANGCI_LINT) $(BUF) $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_G
 GEN_DIR := internal/gen
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fmt generate generate-check tools firecracker guest boot demo e2e bench clean
+.PHONY: help build test lint fmt generate generate-check tools firecracker guest snapshots boot demo e2e bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -116,6 +116,11 @@ firecracker: ## Download the pinned Firecracker + jailer (fingerprint-checked)
 guest: build ## Download the guest kernel and build the guest root disk (no sudo)
 	./guest/fetch-kernel.sh
 	./guest/build-rootfs.sh
+
+# One base snapshot per size class, in the state folder (guest/out/state,
+# or $MICROVM_STATE_DIR). Each build cold-boots a VM, so it needs KVM.
+snapshots: guest ## Build the base snapshots (small, medium) into guest/out/state (needs KVM)
+	./bin/sandboxd build-snapshots
 
 boot: ## Boot one microVM by hand through Firecracker's API, then destroy it
 	./scripts/boot-vm.sh

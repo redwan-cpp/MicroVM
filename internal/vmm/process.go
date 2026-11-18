@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // The names of Firecracker's own files in its run folder. Firecracker runs
@@ -106,9 +108,15 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("vmm: create log file: %w", err)
 	}
 
+	// os/exec would resolve a relative program path against cmd.Dir, the
+	// run folder, so make it absolute first.
+	binary, err := filepath.Abs(cfg.Binary)
+	if err != nil {
+		return fmt.Errorf("vmm: %w", err)
+	}
 	// Relative names only: Firecracker resolves them against its working
 	// directory, the run folder.
-	cmd := exec.Command(cfg.Binary, //nolint:gosec // G204: the binary path comes from our own configuration
+	cmd := exec.Command(binary, //nolint:gosec // G204: the binary path comes from our own configuration
 		"--api-sock", APISocketName,
 		"--log-path", LogName,
 		"--level", "Info",
@@ -221,5 +229,27 @@ func (p *Process) LogPath() string { return filepath.Join(p.dir, LogName) }
 
 // Console returns the last 64 KiB of the guest's serial console. The guest
 // wrote it, so it may hold anything, including terminal escape sequences:
-// clean it before showing it on a terminal.
+// clean it before showing it on a terminal (ConsoleTail does).
 func (p *Process) Console() []byte { return p.console.Bytes() }
+
+// ConsoleTail returns the last n bytes (at most) of the guest's console,
+// with control characters other than newline and tab removed, so it is
+// safe to put into an error message or a log.
+func (p *Process) ConsoleTail(n int) string {
+	return CleanConsole(p.console.Bytes(), n)
+}
+
+// CleanConsole returns the last n bytes (at most) of console output, with
+// control characters other than newline and tab removed: the guest wrote
+// it, and could use them to fake or hide terminal output.
+func CleanConsole(console []byte, n int) string {
+	if len(console) > n {
+		console = console[len(console)-n:]
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, string(console))
+}
