@@ -16,6 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The whole history, not just the last commit: `make lint` runs
+          # buf breaking, which compares proto/ with origin/main.
+          fetch-depth: 0
+      # Make sure origin/main is the newest main, also on pull requests.
+      - run: git fetch origin main
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod # same Go version as on your computer

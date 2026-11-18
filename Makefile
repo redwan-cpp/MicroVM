@@ -38,7 +38,7 @@ TOOLS              := $(GOLANGCI_LINT) $(BUF) $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_G
 GEN_DIR := internal/gen
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fmt generate generate-check tools firecracker guest snapshots boot demo e2e e2e-jailer bench clean
+.PHONY: help build test lint breaking fmt generate generate-check tools firecracker guest snapshots boot demo e2e e2e-jailer bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -56,10 +56,26 @@ test: ## Run the unit tests (with the race detector)
 # `-tags 'e2e jailer'` adds the jailer test (it needs root as well).
 lint: $(GOLANGCI_LINT) $(BUF) ## Check the code for mistakes and style problems
 	$(BUF) lint
+	@$(MAKE) --no-print-directory breaking
 	go vet ./...
 	go vet -tags e2e ./...
 	go vet -tags 'e2e jailer' ./...
 	$(GOLANGCI_LINT) run ./...
+
+# Once a version of the API (such as agent/v1) is on main, no change may
+# break code generated from it: buf compares proto/ here with proto/ on
+# origin/main (the rules are in buf.yaml). CI fetches origin/main first.
+# Until main has a .proto file there is nothing to compare, so the check
+# says so and passes.
+BREAKING_AGAINST := origin/main
+
+breaking: $(BUF) ## Fail if proto/ breaks compatibility with origin/main (part of lint)
+	@if git ls-tree -r --name-only $(BREAKING_AGAINST) -- proto 2>/dev/null | grep -q '\.proto$$'; then \
+		echo "buf breaking --against '.git#branch=$(BREAKING_AGAINST)'"; \
+		$(BUF) breaking --against '.git#branch=$(BREAKING_AGAINST)'; \
+	else \
+		echo "buf breaking: skipped, $(BREAKING_AGAINST) has no .proto files (or is missing: git fetch origin main)"; \
+	fi
 
 fmt: $(GOLANGCI_LINT) ## Auto-format all Go code
 	$(GOLANGCI_LINT) fmt ./...
