@@ -132,7 +132,9 @@ demo: ## Live demo, step by step (press Enter between steps)
 
 # They need KVM and the guest image, so they never run in GitHub CI (CI only
 # checks that they compile, through `make lint`).
-e2e: guest ## Boot real microVMs and test the agent inside them (needs KVM)
+# Each test builds the snapshot it needs in its own state folder under
+# guest/out/, so `make snapshots` is not needed first.
+e2e: guest ## Boot and restore real microVMs and test the agent inside them (needs KVM)
 	go test -tags e2e -count=1 -v ./test/e2e/...
 
 # Jailer mode needs root, and nothing is ever built as root. So the test is
