@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+// The names of Firecracker's own files in its run folder. Firecracker runs
+// with the run folder as its working directory, and every path we give it
+// is one of these relative names (or another one, like rootfs.ext4), never
+// an absolute path: then the same names work unchanged in a jailer chroot
+// and in every clone of a snapshot (ADR-0003, ADR-0005).
+const (
+	// APISocketName is Firecracker's API socket.
+	APISocketName = "api.sock"
+	// VsockName is the conventional vsock Unix socket name (Vsock.UDSPath).
+	VsockName = "v.sock"
+	// LogName is Firecracker's own log file.
+	LogName = "firecracker.log"
+)
+
 const (
 	// consoleSize is how much of the guest's serial console we keep.
 	consoleSize = 64 << 10
@@ -30,9 +44,10 @@ type Config struct {
 	Binary string
 	// RunDir is this VM's private run folder, for example a fresh
 	// state.Root.NewRunDir. It must already exist, on the same filesystem
-	// as the snapshot store. It holds the API socket, the vsock socket,
-	// the log and the VM's files. Start takes it over: Stop, or a failed
-	// Start, deletes it with everything inside.
+	// as the snapshot store. It is Firecracker's working directory and
+	// holds the API socket, the vsock socket, the log and the VM's files,
+	// all by relative names. Start takes it over: Stop, or a failed Start,
+	// deletes it with everything inside.
 	RunDir string
 }
 
@@ -66,7 +81,7 @@ func Start(ctx context.Context, cfg Config) (*Process, error) {
 	p := &Process{
 		dir:       dir,
 		console:   NewRingBuffer(consoleSize),
-		client:    NewClient(filepath.Join(dir, "api.sock")),
+		client:    NewClient(filepath.Join(dir, APISocketName)),
 		exited:    make(chan struct{}),
 		stopGrace: stopGrace,
 	}
@@ -91,11 +106,14 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("vmm: create log file: %w", err)
 	}
 
+	// Relative names only: Firecracker resolves them against its working
+	// directory, the run folder.
 	cmd := exec.Command(cfg.Binary, //nolint:gosec // G204: the binary path comes from our own configuration
-		"--api-sock", p.APISocketPath(),
-		"--log-path", p.LogPath(),
+		"--api-sock", APISocketName,
+		"--log-path", LogName,
 		"--level", "Info",
 	)
+	cmd.Dir = p.dir
 	// stdin is /dev/null (cmd.Stdin is nil). stdout and stderr carry the
 	// guest's serial console: the guest decides what is written there, so
 	// it goes into the ring buffer, which os/exec reads continuously.
@@ -190,15 +208,16 @@ func (p *Process) Pid() int { return p.cmd.Process.Pid }
 // Dir is the private run folder. Stop deletes it.
 func (p *Process) Dir() string { return p.dir }
 
-// APISocketPath is the path of Firecracker's API socket.
-func (p *Process) APISocketPath() string { return filepath.Join(p.dir, "api.sock") }
+// APISocketPath is the host path of Firecracker's API socket.
+func (p *Process) APISocketPath() string { return filepath.Join(p.dir, APISocketName) }
 
-// VsockPath is where to put the vsock Unix socket (Vsock.UDSPath) for this
-// VM. It lives in the run folder, so Stop removes it.
-func (p *Process) VsockPath() string { return filepath.Join(p.dir, "v.sock") }
+// VsockPath is the host path of the vsock Unix socket, for a VM whose
+// Vsock.UDSPath is VsockName. It lives in the run folder, so Stop removes
+// it. Dial the agent here (agentclient.Dial).
+func (p *Process) VsockPath() string { return filepath.Join(p.dir, VsockName) }
 
-// LogPath is Firecracker's own log file.
-func (p *Process) LogPath() string { return filepath.Join(p.dir, "firecracker.log") }
+// LogPath is the host path of Firecracker's own log file.
+func (p *Process) LogPath() string { return filepath.Join(p.dir, LogName) }
 
 // Console returns the last 64 KiB of the guest's serial console. The guest
 // wrote it, so it may hold anything, including terminal escape sequences:

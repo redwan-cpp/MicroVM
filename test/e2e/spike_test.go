@@ -5,14 +5,9 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -38,8 +33,8 @@ import (
 //   - whether the guest kernel reseeds its random number generator by
 //     itself on restore (VMGenID), or only through the agent's Reseed.
 //
-// It drives Firecracker with raw API calls on purpose: it checks
-// Firecracker, not our own packages.
+// It drives Firecracker through internal/vmm only, the thinnest layer we
+// have, so it checks Firecracker's behaviour, not our snapshot code.
 //
 // What it found (2026-11-18, Firecracker v1.17.0, guest kernel 6.1.155):
 //
@@ -55,86 +50,25 @@ import (
 //     Reseed stays anyway (ADR-0003, decision 5): it costs one call, and it
 //     does not depend on the kernel build.
 
-// rawFirecracker is a Firecracker started directly, with dir as its
-// working directory and every path relative to it.
-type rawFirecracker struct {
-	dir     string
-	cmd     *exec.Cmd
-	console *vmm.RingBuffer
-	api     *http.Client
-	exited  chan struct{}
-}
-
-// startRawFirecracker starts Firecracker in dir (which must exist) and
-// waits for its API socket. Cleanup kills it.
-func startRawFirecracker(t *testing.T, binary, dir string) *rawFirecracker {
+// startFirecracker starts an empty Firecracker in dir, which becomes its
+// working directory. Cleanup stops it (and deletes dir).
+func startFirecracker(t *testing.T, binary, dir string) *vmm.Process {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "firecracker.log"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fc := &rawFirecracker{dir: dir, console: vmm.NewRingBuffer(64 << 10), exited: make(chan struct{})}
-	fc.cmd = exec.Command(binary, "--api-sock", "api.sock", "--log-path", "firecracker.log", "--level", "Info") //nolint:gosec // G204: our own pinned binary
-	fc.cmd.Dir = dir
-	fc.cmd.Stdout, fc.cmd.Stderr = fc.console, fc.console
-	fc.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
-	if err := fc.cmd.Start(); err != nil {
-		t.Fatalf("start firecracker: %v", err)
-	}
-	go func() { _ = fc.cmd.Wait(); close(fc.exited) }()
-	t.Cleanup(fc.kill)
-
-	sock := filepath.Join(dir, "api.sock")
-	fc.api = &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", sock)
-		},
-	}}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if conn, err := net.Dial("unix", sock); err == nil {
-			_ = conn.Close()
-			return fc
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no API socket in %s\nconsole:\n%s", dir, consoleTail(fc.console.Bytes()))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// call sends one API request and fails the test on a non-2xx answer.
-func (fc *rawFirecracker) call(t *testing.T, method, path string, body any) {
-	t.Helper()
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, bytes.NewReader(data))
+	proc, err := vmm.Start(ctx, vmm.Config{Binary: binary, RunDir: dir})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("start firecracker: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := fc.api.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // test code
-	answer, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if resp.StatusCode/100 != 2 {
-		t.Fatalf("%s %s: HTTP %d: %s\nconsole:\n%s", method, path, resp.StatusCode, answer, consoleTail(fc.console.Bytes()))
-	}
+	t.Cleanup(func() { _ = proc.Stop() })
+	return proc
 }
 
-// kill ends Firecracker and waits for it.
-func (fc *rawFirecracker) kill() {
-	select {
-	case <-fc.exited:
-	default:
-		_ = fc.cmd.Process.Kill()
-		<-fc.exited
+// must fails the test if an API call failed.
+func must(t *testing.T, proc *vmm.Process, what string, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: %v\nconsole:\n%s", what, err, consoleTail(proc.Console()))
 	}
 }
 
@@ -159,22 +93,22 @@ func TestSpikeSnapshotPaths(t *testing.T) {
 
 	// 1. Cold-boot the build VM with relative paths only, wait for the
 	// agent, probe VMGenID, then snapshot it.
-	fc := startRawFirecracker(t, a.firecracker, build)
-	fc.call(t, "PUT", "/machine-config", map[string]any{"vcpu_count": 1, "mem_size_mib": 256})
-	fc.call(t, "PUT", "/boot-source", map[string]any{"kernel_image_path": a.kernel, "boot_args": bootArgs})
-	fc.call(t, "PUT", "/drives/rootfs", map[string]any{
-		"drive_id": "rootfs", "path_on_host": "rootfs.ext4", "is_root_device": true, "is_read_only": true,
-	})
-	fc.call(t, "PUT", "/drives/scratch", map[string]any{
-		"drive_id": "scratch", "path_on_host": "scratch.ext4", "is_root_device": false, "is_read_only": false,
-	})
-	fc.call(t, "PUT", "/vsock", map[string]any{"guest_cid": guestCID, "uds_path": "v.sock"})
+	ctx := t.Context()
+	fc := startFirecracker(t, a.firecracker, build)
+	api := fc.Client()
+	must(t, fc, "machine config", api.PutMachineConfig(ctx, vmm.MachineConfig{VCPUCount: 1, MemSizeMiB: 256}))
+	must(t, fc, "boot source", api.PutBootSource(ctx, vmm.BootSource{KernelImagePath: a.kernel, BootArgs: bootArgs}))
+	must(t, fc, "root disk", api.PutDrive(ctx, vmm.Drive{
+		DriveID: "rootfs", PathOnHost: "rootfs.ext4", IsRootDevice: true, IsReadOnly: true,
+	}))
+	must(t, fc, "scratch disk", api.PutDrive(ctx, vmm.Drive{DriveID: "scratch", PathOnHost: "scratch.ext4"}))
+	must(t, fc, "vsock", api.PutVsock(ctx, vmm.Vsock{GuestCID: guestCID, UDSPath: vmm.VsockName}))
 	started := time.Now()
-	fc.call(t, "PUT", "/actions", map[string]any{"action_type": "InstanceStart"})
-	agent := waitForAgent(t, filepath.Join(build, "v.sock"), fc.exited, fc.console.Bytes, started)
+	must(t, fc, "InstanceStart", api.Start(ctx))
+	agent := waitForAgent(t, fc.VsockPath(), fc.Done(), fc.Console, started)
 	t.Logf("cold boot: InstanceStart → agent ready: %v", time.Since(started).Round(time.Millisecond))
 
-	v := &vm{agent: agent, console: fc.console.Bytes}
+	v := &vm{agent: agent, console: fc.Console}
 	_, drivers, _ := v.exec(t, 10*time.Second, &agentv1.ExecRequest{Argv: []string{"sh", "-c",
 		"ls /sys/bus/platform/drivers/vmgenid /sys/bus/acpi/drivers/vmgenid 2>/dev/null"}})
 	vmgenid := strings.Contains(drivers, "VMGENCTR")
@@ -182,11 +116,8 @@ func TestSpikeSnapshotPaths(t *testing.T) {
 
 	// No host connection may be frozen into the snapshot.
 	_ = agent.Close()
-	fc.call(t, "PATCH", "/vm", map[string]any{"state": "Paused"})
-	fc.call(t, "PUT", "/snapshot/create", map[string]any{
-		"snapshot_type": "Full", "snapshot_path": "vm.snap", "mem_file_path": "mem.snap",
-	})
-	fc.kill()
+	must(t, fc, "pause", api.Pause(ctx))
+	must(t, fc, "create snapshot", api.CreateSnapshot(ctx, vmm.SnapshotCreate{SnapshotPath: "vm.snap", MemFilePath: "mem.snap"}))
 
 	// 2. The relative names were kept: the state file names the files as
 	// we wrote them and never mentions the build folder.
@@ -204,20 +135,23 @@ func TestSpikeSnapshotPaths(t *testing.T) {
 	}
 
 	// 3. Move the snapshot into the store, make every store file 0444, and
-	// delete the build folder: a clone can only work if it finds its
-	// files by the relative names, in its own folder.
+	// stop the build VM, which deletes the build folder: a clone can only
+	// work if it finds its files by the relative names, in its own folder.
 	for _, name := range []string{"vm.snap", "mem.snap"} {
 		if err := os.Rename(filepath.Join(build, name), filepath.Join(store, name)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := fc.Stop(); err != nil {
+		t.Fatal(err)
 	}
 	for _, name := range []string{"vm.snap", "mem.snap", "rootfs.ext4"} {
 		if err := os.Chmod(filepath.Join(store, name), 0o444); err != nil { //nolint:gosec // G302: store files are read-only for everyone on purpose (a jailed Firecracker reads them as another user)
 			t.Fatal(err)
 		}
 	}
-	if err := os.RemoveAll(build); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(build); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the build folder is still there (%v)", err)
 	}
 
 	// 4. Restore two clones side by side, each in its own folder, and read
@@ -231,18 +165,18 @@ func TestSpikeSnapshotPaths(t *testing.T) {
 		}
 		sparseFile(t, filepath.Join(dir, "scratch.ext4"), 64<<20)
 
-		fc := startRawFirecracker(t, a.firecracker, dir)
+		fc := startFirecracker(t, a.firecracker, dir)
 		started := time.Now()
-		fc.call(t, "PUT", "/snapshot/load", map[string]any{
-			"snapshot_path": "vm.snap",
-			"mem_backend":   map[string]any{"backend_type": "File", "backend_path": "mem.snap"},
-			"resume_vm":     true,
-		})
+		must(t, fc, "load snapshot", fc.Client().LoadSnapshot(ctx, vmm.SnapshotLoad{
+			SnapshotPath: "vm.snap",
+			MemBackend:   vmm.MemoryBackend{BackendType: "File", BackendPath: "mem.snap"},
+			ResumeVM:     true,
+		}))
 		loaded := time.Since(started)
-		agent := waitForAgent(t, filepath.Join(dir, "v.sock"), fc.exited, fc.console.Bytes, started)
+		agent := waitForAgent(t, fc.VsockPath(), fc.Done(), fc.Console, started)
 		t.Logf("clone %d: LoadSnapshot %v, agent ready %v after it", i+1,
 			loaded.Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
-		v := &vm{agent: agent, console: fc.console.Bytes}
+		v := &vm{agent: agent, console: fc.Console}
 		t.Cleanup(func() { _ = agent.Close() })
 
 		_, uuid, _ := v.exec(t, 10*time.Second, &agentv1.ExecRequest{Argv: []string{"cat", "/proc/sys/kernel/random/uuid"}})

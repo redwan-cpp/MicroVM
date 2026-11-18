@@ -140,7 +140,7 @@ func bootVM(t *testing.T, a artifacts, root *state.Root) *vm {
 			return api.PutDrive(ctx, vmm.Drive{DriveID: "rootfs", PathOnHost: a.rootfs, IsRootDevice: true, IsReadOnly: true})
 		},
 		func() error {
-			return api.PutVsock(ctx, vmm.Vsock{GuestCID: guestCID, UDSPath: proc.VsockPath()})
+			return api.PutVsock(ctx, vmm.Vsock{GuestCID: guestCID, UDSPath: vmm.VsockName}) // in the run folder
 		},
 	} {
 		if err := step(); err != nil {

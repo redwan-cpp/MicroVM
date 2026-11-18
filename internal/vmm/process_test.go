@@ -28,6 +28,8 @@ func TestMain(m *testing.M) {
 	case "exit-at-once":
 		fmt.Println("fake firecracker: giving up")
 		os.Exit(3)
+	case "version":
+		fmt.Print("Firecracker v1.17.0\n\n2026-11-18T00:00:00 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0\n")
 	default:
 		fakeFirecracker(mode == "ignore-sigterm")
 	}
@@ -58,7 +60,8 @@ func fakeFirecracker(ignoreSIGTERM bool) {
 		fmt.Fprintln(os.Stderr, "fake firecracker:", err)
 		os.Exit(1)
 	}
-	fmt.Println("fake console: hello on stdout")
+	cwd, _ := os.Getwd()
+	fmt.Println("fake console: hello on stdout, cwd=" + cwd)
 	fmt.Fprintln(os.Stderr, "fake console: hello on stderr")
 	srv := &http.Server{
 		Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
@@ -109,6 +112,9 @@ func TestProcessStartAndStop(t *testing.T) {
 	if filepath.Dir(p.VsockPath()) != p.Dir() {
 		t.Errorf("VsockPath %s is not in the run folder", p.VsockPath())
 	}
+	if info, err := os.Stat(p.LogPath()); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("log file: %v, %v; want mode 0600", info, err)
+	}
 	if err := p.Client().Start(t.Context()); err != nil {
 		t.Errorf("API call to the fake: %v", err)
 	}
@@ -116,6 +122,11 @@ func TestProcessStartAndStop(t *testing.T) {
 		c := p.Console()
 		return bytes.Contains(c, []byte("hello on stdout")) && bytes.Contains(c, []byte("hello on stderr"))
 	})
+	// Firecracker runs in its run folder, so the relative names it got
+	// (--api-sock api.sock) land there.
+	if !bytes.Contains(p.Console(), []byte("cwd="+p.Dir()+"\n")) {
+		t.Errorf("the fake did not run in the run folder %s; console:\n%s", p.Dir(), p.Console())
+	}
 
 	pid := p.Pid()
 	if err := p.Stop(); err != nil {
@@ -160,6 +171,32 @@ func TestProcessStartFailsWithoutBinary(t *testing.T) {
 		t.Errorf("err = %v, want a not-found error", err)
 	}
 	assertEmpty(t, tmp)
+}
+
+func TestBinaryVersion(t *testing.T) {
+	t.Setenv(fakeEnv, "version")
+	v, err := BinaryVersion(t.Context(), os.Args[0])
+	if err != nil || v != "v1.17.0" {
+		t.Errorf("BinaryVersion = %q, %v; want v1.17.0", v, err)
+	}
+}
+
+func TestParseVersion(t *testing.T) {
+	for out, want := range map[string]string{
+		"Firecracker v1.17.0\n\nexiting":   "v1.17.0",
+		"Firecracker v1.18.0-dev\n":        "v1.18.0-dev",
+		"Firecracker v1.17.0":              "v1.17.0",
+		"firecracker v1.17.0\n":            "",
+		"Jailer v1.17.0\n":                 "",
+		"Firecracker 1.17.0\n":             "",
+		"":                                 "",
+		"Firecracker v1.17.0 extra junk\n": "",
+	} {
+		got, err := parseVersion([]byte(out))
+		if got != want || (want == "") != (err != nil) {
+			t.Errorf("parseVersion(%q) = %q, %v; want %q", out, got, err, want)
+		}
+	}
 }
 
 func TestProcessStartNeedsARunDir(t *testing.T) {

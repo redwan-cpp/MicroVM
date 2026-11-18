@@ -76,6 +76,64 @@ func TestClientSendsTheRightRequests(t *testing.T) {
 	}
 }
 
+func TestClientSnapshotRequests(t *testing.T) {
+	var got []request
+	c := unixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("%s %s: body is not JSON: %v", r.Method, r.URL.Path, err)
+		}
+		got = append(got, request{r.Method, r.URL.Path, r.Header.Get("Content-Type"), body})
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ctx := t.Context()
+
+	steps := []error{
+		c.Pause(ctx),
+		c.CreateSnapshot(ctx, SnapshotCreate{SnapshotPath: "vm.snap", MemFilePath: "mem.snap"}),
+		c.Resume(ctx),
+		c.LoadSnapshot(ctx, SnapshotLoad{
+			SnapshotPath: "vm.snap",
+			MemBackend:   MemoryBackend{BackendType: "File", BackendPath: "mem.snap"},
+			ResumeVM:     true,
+		}),
+	}
+	for i, err := range steps {
+		if err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+
+	want := []request{
+		{"PATCH", "/vm", "application/json", map[string]any{"state": "Paused"}},
+		{"PUT", "/snapshot/create", "application/json", map[string]any{
+			"snapshot_type": "Full", "snapshot_path": "vm.snap", "mem_file_path": "mem.snap",
+		}},
+		{"PATCH", "/vm", "application/json", map[string]any{"state": "Resumed"}},
+		// clock_realtime is left out unless asked for.
+		{"PUT", "/snapshot/load", "application/json", map[string]any{
+			"snapshot_path": "vm.snap",
+			"mem_backend":   map[string]any{"backend_type": "File", "backend_path": "mem.snap"},
+			"resume_vm":     true,
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("requests:\n got  %v\n want %v", got, want)
+	}
+}
+
+func TestClientReportsTheMethodInErrors(t *testing.T) {
+	c := unixServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"fault_message": "not running"}`)
+	})
+	err := c.Pause(t.Context())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Method != "PATCH" || apiErr.Path != "/vm" {
+		t.Errorf("err = %v, want an *APIError for PATCH /vm", err)
+	}
+}
+
 func TestClientDecodesFaultMessage(t *testing.T) {
 	c := unixServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
