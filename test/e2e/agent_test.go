@@ -81,8 +81,9 @@ func findArtifacts(t *testing.T) artifacts {
 
 // vm is one running microVM with a connected agent.
 type vm struct {
-	proc  *vmm.Process
-	agent *agentclient.Client
+	proc    *vmm.Process // nil for a VM the test started some other way
+	agent   *agentclient.Client
+	console func() []byte // the guest console, for error messages
 }
 
 // bootVM starts Firecracker, configures and starts a VM, and waits until
@@ -122,45 +123,47 @@ func bootVM(t *testing.T, a artifacts) *vm {
 
 	started := time.Now()
 	if err := api.Start(ctx); err != nil {
-		t.Fatalf("InstanceStart: %v\nconsole:\n%s", err, consoleTail(proc))
+		t.Fatalf("InstanceStart: %v\nconsole:\n%s", err, consoleTail(proc.Console()))
 	}
-	client := waitForAgent(t, proc, started)
+	client := waitForAgent(t, proc.VsockPath(), proc.Done(), proc.Console, started)
 	t.Cleanup(func() { _ = client.Close() })
 	t.Logf("InstanceStart → agent ready: %v", time.Since(started).Round(time.Millisecond))
-	return &vm{proc: proc, agent: client}
+	return &vm{proc: proc, agent: client, console: proc.Console}
 }
 
-// waitForAgent dials the agent until it answers Health, for at most
-// readyTimeout after InstanceStart. While the guest boots, the vsock
-// socket may not exist yet (ENOENT), or nothing may listen on the port yet
-// (vsockconn.ErrNotReady); both are worth another try.
-func waitForAgent(t *testing.T, proc *vmm.Process, started time.Time) *agentclient.Client {
+// waitForAgent dials the agent behind the vsock socket vsockPath until it
+// answers Health, for at most readyTimeout after started (InstanceStart or
+// the snapshot load). While the guest boots, the vsock socket may not exist
+// yet (ENOENT), or nothing may listen on the port yet
+// (vsockconn.ErrNotReady); both are worth another try. done is closed when
+// the VM's Firecracker exits; console returns its console output.
+func waitForAgent(t *testing.T, vsockPath string, done <-chan struct{}, console func() []byte, started time.Time) *agentclient.Client {
 	t.Helper()
 	ctx, cancel := context.WithDeadline(t.Context(), started.Add(readyTimeout))
 	defer cancel()
 
 	for {
-		client, err := agentclient.Dial(ctx, proc.VsockPath(), agent.Port)
+		client, err := agentclient.Dial(ctx, vsockPath, agent.Port)
 		if err == nil {
 			if _, err = client.Health(ctx); err == nil {
 				return client
 			}
 			_ = client.Close()
-			t.Fatalf("connected to the agent, but Health failed: %v\nconsole:\n%s", err, consoleTail(proc))
+			t.Fatalf("connected to the agent, but Health failed: %v\nconsole:\n%s", err, consoleTail(console()))
 		}
 		retry := errors.Is(err, vsockconn.ErrNotReady) ||
 			errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
 		if !retry {
-			t.Fatalf("dial the agent: %v\nconsole:\n%s", err, consoleTail(proc))
+			t.Fatalf("dial the agent: %v\nconsole:\n%s", err, consoleTail(console()))
 		}
 
 		select {
-		case <-proc.Done():
+		case <-done:
 			t.Fatalf("the VM stopped before the agent answered (is the agent in the image? run make guest)\nconsole:\n%s",
-				consoleTail(proc))
+				consoleTail(console()))
 		case <-ctx.Done():
 			t.Fatalf("the agent did not answer within %v of InstanceStart (last error: %v)\n"+
-				"is the agent in the image? run make guest\nconsole:\n%s", readyTimeout, err, consoleTail(proc))
+				"is the agent in the image? run make guest\nconsole:\n%s", readyTimeout, err, consoleTail(console()))
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -174,7 +177,7 @@ func (v *vm) exec(t *testing.T, d time.Duration, req *agentv1.ExecRequest) (agen
 	var stdout, stderr bytes.Buffer
 	res, err := v.agent.Exec(ctx, req, &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("Exec(%q): %v\nconsole:\n%s", req.GetArgv(), err, consoleTail(v.proc))
+		t.Fatalf("Exec(%q): %v\nconsole:\n%s", req.GetArgv(), err, consoleTail(v.console()))
 	}
 	return res, stdout.String(), stderr.String()
 }
@@ -334,11 +337,10 @@ func TestAgentInARealVM(t *testing.T) {
 	}
 }
 
-// consoleTail returns the end of the guest console, cleaned for printing:
+// consoleTail returns the end of a guest console, cleaned for printing:
 // the guest wrote it, so control characters (terminal escape sequences)
 // are removed.
-func consoleTail(p *vmm.Process) string {
-	console := p.Console()
+func consoleTail(console []byte) string {
 	if len(console) > 4096 {
 		console = console[len(console)-4096:]
 	}
