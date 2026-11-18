@@ -66,10 +66,11 @@ ROOTFS="${REPO_ROOT}/guest/out/rootfs.ext4"
 [[ -r /dev/kvm && -w /dev/kvm ]] || { echo "error: no access to /dev/kvm (try: sudo usermod -aG kvm \$USER, then log in again)" >&2; exit 1; }
 
 # Every run gets its own private folder: API socket, console pipe, logs.
-RUN_ID="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-RUN="${XDG_RUNTIME_DIR:-/tmp}/microvm/run-${RUN_ID}"
-mkdir -p "${RUN}"
-chmod 700 "${RUN}"
+# mktemp -d picks a fresh random name and creates it with mode 0700 in one
+# step, so no other user can create it first or look inside. It lives in
+# $XDG_RUNTIME_DIR (a per-user folder in RAM) when there is one, and never
+# in a fixed folder that several users share.
+RUN="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/microvm-run.XXXXXX")"
 SOCK="${RUN}/firecracker.sock"
 FIFO="${RUN}/console"
 LOG="${RUN}/firecracker.log"
@@ -94,10 +95,16 @@ now_us() { echo "${EPOCHREALTIME/./}"; }
 
 # The guest's serial console arrives here, one line at a time. We indent it,
 # and turn the "@@" markers from guest/init/demo-init into timings.
+#
+# Everything on the console is written by the guest, and the guest runs
+# untrusted code. So each line is cleaned before it reaches your terminal:
+# control characters (escape sequences could move the cursor, rewrite the
+# screen or retitle the window) are removed, tabs become spaces.
 console_reader() {
-  local line t0
+  local line t0 code
   while IFS= read -r line || [[ -n "${line}" ]]; do
-    line="${line%$'\r'}"
+    line="${line//$'\t'/ }"
+    line="${line//[[:cntrl:]]/}"
     case "${line}" in
       *@@guest-init-started@@*)
         t0="$(<"${RUN}/t0")"
@@ -106,8 +113,11 @@ console_reader() {
           "${G}" "$(<"${RUN}/boot-ms")" "${N}"
         ;;
       *@@exit=*@@*)
-        line="${line#*@@exit=}"
-        echo "${line%%@@*}" > "${RUN}/exit-code"
+        # Only a plain number of 1 to 3 digits counts as an exit code. The
+        # guest can print anything, so anything else is ignored.
+        code="${line#*@@exit=}"
+        code="${code%%@@*}"
+        [[ "${code}" =~ ^[0-9]{1,3}$ ]] && echo "${code}" > "${RUN}/exit-code"
         ;;
       *"] reboot: "*) # the kernel's own goodbye; we report the end ourselves
         ((KERNEL_LOG)) && printf '  %s│%s %s\n' "${C}" "${N}" "${line}"
@@ -118,10 +128,11 @@ console_reader() {
 }
 
 # One request to Firecracker's API. Shows it, and stops on any error.
+# --max-time: a Firecracker that stops answering must not hang the script.
 api() {
   local method="$1" path="$2" body="$3" code
   ((SHOW_API)) && printf '  %s→ %s %s%s %s%s%s\n' "${B}" "${method}" "${path}" "${N}" "${D}" "${body}" "${N}"
-  code="$(curl -sS --unix-socket "${SOCK}" -X "${method}" "http://localhost${path}" \
+  code="$(curl -sS --max-time 5 --unix-socket "${SOCK}" -X "${method}" "http://localhost${path}" \
     -H 'Content-Type: application/json' -d "${body}" -o "${RUN}/api-response" -w '%{http_code}')"
   if [[ "${code}" != 2* ]]; then
     echo "${R}  ← ${code}: $(cat "${RUN}/api-response")${N}" >&2

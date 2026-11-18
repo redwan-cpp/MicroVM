@@ -25,7 +25,7 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] Build plan, ADR-0001 (Go), ADR-0002 (gRPC), ADR-0003 (snapshot constraints)
 - [x] Threat model v0
 - [x] Learning guide and foundation docs 00–04 (big picture, inside a computer, operating system, terminal, containers vs VMs)
-- [x] Toolchain: Go 1.27, build-essential, mmdebstrap, python3-venv, golangci-lint v2.15.0 (pinned in the Makefile)
+- [x] Toolchain: Go 1.27, build-essential, python3-venv, golangci-lint v2.15.0 (pinned in the Makefile). mmdebstrap was planned but is not installed (installing it needs sudo), so week 1 builds the guest from Alpine instead
 - [x] `go.mod` (`github.com/redwan-cpp/MicroVM`), three program stubs, Makefile, CI workflow, LICENSE, CHANGELOG
 - [x] Pinned Firecracker + jailer v1.17.0 with a two-level SHA-256 check (`make firecracker`)
 

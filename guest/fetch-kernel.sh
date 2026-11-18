@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fetch-kernel.sh: download the pinned guest kernel and check its fingerprint.
-# Run it with `make guest` (or `make kernel`).
+# Run it with `make guest`, which also builds the root disk.
 #
 # A microVM needs its own Linux kernel: that is the whole point. The guest
 # never uses the host's kernel, so a bug in the guest kernel stays inside the

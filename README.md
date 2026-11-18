@@ -36,7 +36,12 @@ sandboxctl logs <run-id>
 
 ## Building from source
 
-Requires Linux with KVM and Go 1.27+.
+Requires:
+- Linux with KVM (`/dev/kvm` readable and writable by your user)
+- Go 1.27+
+- util-linux 2.38 or newer (`unshare --map-auto` builds the guest disk without sudo)
+- subordinate uid/gid ranges for your user in `/etc/subuid` and `/etc/subgid` (most distributions add them when the user is created)
+- e2fsprogs (`mkfs.ext4 -d`), curl and bash 5
 
 ```bash
 make firecracker  # pinned Firecracker + jailer into third_party/, SHA-256 checked

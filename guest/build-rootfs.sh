@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build-rootfs.sh: build the guest's root disk image, guest/out/rootfs.ext4.
-# Run it with `make guest` (or `make rootfs`).
+# Run it with `make guest`, which also fetches the kernel.
 #
 # The root disk is a file on the host that holds an ext4 filesystem. Firecracker
 # shows it to the guest as /dev/vda. We fill it with Alpine Linux's
