@@ -4,7 +4,7 @@
 
 AI agents and scripts run code with our permissions, and one bad command can delete files or leak secrets. Containers share the host kernel, so a kernel bug can break out of them. Full VMs are safe but take seconds to start. MicroVM Sandbox gives **every run its own hardware-isolated microVM**. It restores the VM from a copy-on-write snapshot, applies a per-run policy (CPU, memory, files, network), runs the command and destroys everything afterwards.
 
-> **Status:** week 2 of 13. `sandbox-agent` runs inside the microVM: `make e2e` boots a real Firecracker VM, connects to the agent over gRPC on vsock, runs commands and streams their output back, then destroys the VM. The host enforces every limit itself. `sandboxd` and `sandboxctl` still only print their version (they arrive in week 4). See the [build plan](docs/build-plan.md).
+> **Status:** week 3 of 13. `make snapshots` saves a booted microVM, with `sandbox-agent` running inside, as a base snapshot per size class, and `make e2e` restores clones from it in about 15–20 ms (a cold boot takes about 80 ms to reach the agent), resets each clone's clock and random state, runs commands over gRPC on vsock and destroys the clone. Clones run rootless by default; jailer mode (chroot, UID drop, cgroup limits) needs root and is tested by hand ([ADR-0005](docs/adr/0005-rootless-and-jailer-modes.md)). `sandboxd` and `sandboxctl` arrive in week 4. See the [build plan](docs/build-plan.md).
 > **Security:** research and teaching project, **not audited**. See [SECURITY.md](SECURITY.md).
 
 ## How it works
@@ -84,7 +84,7 @@ sudo bin/e2e-jailer.test -test.run Jailer -test.v                 # the only ste
 
 - [Build plan](docs/build-plan.md): week-by-week tasks, risks, hour log
 - [Threat model](docs/threat-model.md): attacker, trust boundaries, mitigations
-- Architecture decisions: [0001 Go](docs/adr/0001-go-for-all-components.md) · [0002 gRPC](docs/adr/0002-grpc-for-apis.md) · [0003 snapshot constraints](docs/adr/0003-snapshot-constraints.md) · [0004 Alpine guest](docs/adr/0004-alpine-guest-rootfs.md)
+- Architecture decisions: [0001 Go](docs/adr/0001-go-for-all-components.md) · [0002 gRPC](docs/adr/0002-grpc-for-apis.md) · [0003 snapshot constraints](docs/adr/0003-snapshot-constraints.md) · [0004 Alpine guest](docs/adr/0004-alpine-guest-rootfs.md) · [0005 rootless and jailer modes](docs/adr/0005-rootless-and-jailer-modes.md)
 - [Learning docs](docs/learn/README.md): how every part works, starting from zero with [the big picture](docs/learn/00-big-picture.md)
 
 ## Stack
