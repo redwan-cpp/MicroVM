@@ -1,0 +1,129 @@
+// agent.proto: the API between the host (sandboxd) and sandbox-agent, the
+// small program that runs inside every microVM.
+//
+// The host is the client and the agent is the server. The connection is
+// gRPC over vsock, a virtual socket between the VM and the host (see
+// docs/learn/08-guest-vsock-agent.md).
+//
+// Security rule: the guest runs untrusted code as root, so it can replace
+// this agent with anything it likes. The host therefore treats every
+// message from the agent as untrusted input. It enforces every limit
+// itself (deadlines, output size), and the fields below that the agent
+// reports (timed_out, output_truncated, ...) are information only, never
+// the basis for a decision. See docs/threat-model.md, trust boundary 3.
+syntax = "proto3";
+
+package sandbox.agent.v1;
+
+// AgentService is what sandbox-agent offers the host.
+service AgentService {
+  // Health answers as soon as the agent is up. The host uses it to see
+  // that a new VM is ready for work.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Exec runs one command and streams its output back while it runs:
+  // any number of stdout and stderr chunks, then exactly one exit event,
+  // always last.
+  rpc Exec(ExecRequest) returns (stream ExecResponse);
+
+  // SyncTime sets the guest's clock from the host's clock. A VM restored
+  // from a snapshot wakes up with the time the snapshot was taken.
+  rpc SyncTime(SyncTimeRequest) returns (SyncTimeResponse);
+
+  // Reseed mixes host-supplied random bytes into the guest's random number
+  // generator. Clones of one snapshot otherwise share the same RNG state.
+  rpc Reseed(ReseedRequest) returns (ReseedResponse);
+}
+
+// HealthRequest has no fields.
+message HealthRequest {}
+
+// HealthResponse describes the running agent.
+message HealthResponse {
+  // version is the agent's build, for example
+  // "sandbox-agent v0.1.0 (commit 1a2b3c4, go1.27.3 linux/amd64)".
+  string version = 1;
+  // uptime_ms is how long the agent has been running, in milliseconds.
+  uint64 uptime_ms = 2;
+}
+
+// ExecRequest describes one command to run.
+message ExecRequest {
+  // argv is the program and its arguments, for example ["echo", "hi"].
+  // There is no shell: to use one, ask for it, as in
+  // ["sh", "-c", "echo hi | wc -c"]. argv[0] is looked up in the fixed PATH
+  // /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin unless it
+  // contains a "/". Must not be empty.
+  repeated string argv = 1;
+
+  // env adds environment variables. The command never inherits the
+  // agent's own environment: it starts with only PATH (the fixed one
+  // above), HOME=/root and LANG=C.UTF-8. env may override HOME and LANG but
+  // not PATH. Names must match [A-Za-z_][A-Za-z0-9_]*; at most 64 entries.
+  map<string, string> env = 2;
+
+  // working_dir is an absolute path in the guest. Empty means "/".
+  string working_dir = 3;
+
+  // stdin is given to the command as its standard input, which is then
+  // closed. Empty means no input.
+  bytes stdin = 4;
+
+  // timeout_ms is the wall-clock limit in milliseconds. 0 means the default
+  // of 30 s; more than 10 minutes is rejected. When it runs out, the agent
+  // kills the command and every process it started.
+  uint32 timeout_ms = 5;
+
+  // max_output_bytes caps stdout and stderr together. 0 means the default
+  // of 1 MiB; more than 16 MiB is rejected. Output past the cap is read and
+  // thrown away, so the command keeps running to its end.
+  uint64 max_output_bytes = 6;
+}
+
+// ExecResponse is one event of a running command.
+message ExecResponse {
+  // event is exactly one of the following.
+  oneof event {
+    // stdout is the next chunk of standard output (at most 32 KiB).
+    bytes stdout = 1;
+    // stderr is the next chunk of standard error (at most 32 KiB).
+    bytes stderr = 2;
+    // exit is the final event: the command has ended.
+    ExitStatus exit = 3;
+  }
+}
+
+// ExitStatus is how the command ended, as reported by the agent.
+message ExitStatus {
+  // exit_code is the command's exit status (0 to 255), or -1 if a signal
+  // killed it.
+  int32 exit_code = 1;
+  // signal is the number of the signal that killed the command (9 for
+  // SIGKILL), or 0 if it exited by itself.
+  int32 signal = 2;
+  // timed_out is true if the agent killed the command because timeout_ms
+  // ran out.
+  bool timed_out = 3;
+  // output_truncated is true if output past max_output_bytes was dropped.
+  bool output_truncated = 4;
+  // duration_us is how long the command ran, in microseconds.
+  uint64 duration_us = 5;
+}
+
+// SyncTimeRequest carries the host's current time.
+message SyncTimeRequest {
+  // unix_nanos is the time in nanoseconds since 1970-01-01 00:00:00 UTC.
+  int64 unix_nanos = 1;
+}
+
+// SyncTimeResponse has no fields.
+message SyncTimeResponse {}
+
+// ReseedRequest carries random bytes from the host.
+message ReseedRequest {
+  // entropy is 32 to 512 random bytes.
+  bytes entropy = 1;
+}
+
+// ReseedResponse has no fields.
+message ReseedResponse {}
