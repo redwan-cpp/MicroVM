@@ -19,6 +19,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod # same Go version as on your computer
+      # The pinned tools (golangci-lint, buf, protoc plugins) take minutes to
+      # build. Keep bin/tools between runs; the pins live in the Makefile, so
+      # a new pin means a new cache.
+      - uses: actions/cache@v6
+        with:
+          path: bin/tools
+          key: tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
       - run: make lint
       - run: make test
       - run: make build
+      # The committed generated code must match proto/.
+      - run: make generate-check

@@ -1,0 +1,20 @@
+# buf.yaml: settings for buf, the tool that checks our .proto files and
+# turns them into Go code (`make lint`, `make generate`).
+version: v2
+
+# One "module": every .proto file under proto/. A file's path inside proto/
+# must match its package, so sandbox.agent.v1 lives in sandbox/agent/v1/.
+modules:
+  - path: proto
+
+lint:
+  # STANDARD: buf's recommended style rules (versioned package names,
+  # one request and one response message per RPC, ...).
+  use:
+    - STANDARD
+
+breaking:
+  # FILE: the strictest check. Once a version (such as agent/v1) is on main,
+  # no change may break code generated from an older copy of the file.
+  use:
+    - FILE

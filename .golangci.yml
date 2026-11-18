@@ -1,6 +1,13 @@
 # golangci-lint runs many code checkers ("linters") at once. `make lint` uses it.
 version: "2"
 
+run:
+  # Also check the end-to-end tests in test/e2e. They only build with the
+  # e2e tag (they need KVM and never run in CI), but they must still compile
+  # and pass the linters.
+  build-tags:
+    - e2e
+
 linters:
   # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
   default: standard

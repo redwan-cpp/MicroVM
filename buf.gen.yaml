@@ -1,0 +1,29 @@
+# buf.gen.yaml: how `make generate` turns proto/ into Go code.
+version: v2
+
+# Delete the output folder first, so code for a removed .proto file does
+# not linger.
+clean: true
+
+# "Managed mode" lets buf choose the Go import path, so the .proto files
+# need no Go-specific options. proto/sandbox/agent/v1/agent.proto becomes
+# the Go package github.com/redwan-cpp/MicroVM/internal/gen/sandbox/agent/v1
+# (package name agentv1).
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/redwan-cpp/MicroVM/internal/gen
+
+# The two plugins are found on PATH, without versions; the Makefile pins
+# them and puts the right ones on PATH.
+plugins:
+  - local: protoc-gen-go
+    out: internal/gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: internal/gen
+    opt: paths=source_relative
+
+inputs:
+  - directory: proto
