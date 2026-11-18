@@ -30,9 +30,11 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] Pinned Firecracker + jailer v1.17.0 with a two-level SHA-256 check (`make firecracker`)
 
 ### Week 1: boot a microVM by hand
-- [ ] `guest/fetch-kernel.sh`: pinned guest kernel, SHA-256 checked
-- [ ] `guest/build-rootfs.sh`: mmdebstrap → `mkfs.ext4 -d` (rootless)
-- [ ] Boot the guest with `curl` on the Firecracker API socket, record every call in the learning doc
+- [x] `guest/fetch-kernel.sh`: pinned guest kernel (Firecracker CI 6.1.155), SHA-256 pinned on first download
+- [x] `guest/build-rootfs.sh`: Alpine minirootfs (SHA-256 checked) → `mkfs.ext4 -d` inside a user namespace (rootless). Alpine instead of mmdebstrap for now: mmdebstrap isn't installed on the dev machine and installing it needs sudo. Revisit if the guest needs Debian packages.
+- [x] Boot the guest with `curl` on the Firecracker API socket: `scripts/boot-vm.sh` (`make boot`) prints every call
+- [ ] Write those calls up in learning doc 06
+- [x] `make demo`: step-by-step live demo for presentations (`scripts/demo.sh`)
 - [ ] Learning docs 05 (KVM), 06 (Firecracker and its API), 07 (reading Go code)
 
 ### Week 2: guest agent and VMM client

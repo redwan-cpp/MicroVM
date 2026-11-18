@@ -1,0 +1,47 @@
+#!/bin/sh
+# demo-init: the first program the guest kernel starts (PID 1).
+#
+# On a normal Linux machine PID 1 is systemd or OpenRC. Our microVM needs
+# none of that: it starts, runs one job and stops. From week 2 this job
+# belongs to sandbox-agent; until then this small shell script stands in.
+#
+# Lines starting with "@@" are markers for scripts/boot-vm.sh on the host.
+# It hides them and uses them to time the boot and read the exit code.
+
+echo "@@guest-init-started@@"
+
+# The kernel only gives us a root filesystem. Mount the usual virtual ones.
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null # often mounted by the kernel already
+mount -t tmpfs -o size=16m tmpfs /tmp       # the root disk is read-only
+hostname microvm
+export HOME=/root LS_COLORS=none # plain output on the serial console
+
+if [ -n "${sandbox_cmd_b64:-}" ]; then
+  # The host passed a command (base64, because the kernel command line
+  # splits on spaces). Run it, then report its exit code.
+  sh -c "$(echo "${sandbox_cmd_b64}" | base64 -d)"
+  echo "@@exit=$?@@"
+else
+  echo "Hello from inside a Firecracker microVM!"
+  echo
+  echo "  kernel     $(uname -r)   (not the host's kernel)"
+  echo "  hostname   $(hostname)"
+  echo "  vCPUs      $(grep -c '^processor' /proc/cpuinfo)"
+  echo "  memory     $(awk '/MemTotal/ {printf "%d MiB", $2 / 1024}' /proc/meminfo)"
+  echo "  PID        $$   (its own process tree: this script is the first program)"
+  echo "  network    $(ls /sys/class/net | tr '\n' ' ')  (no network card at all)"
+  if touch /pwned 2>/dev/null; then
+    echo "  root disk  WRITABLE (this should not happen)"
+  else
+    echo "  root disk  read-only: writing to / fails"
+  fi
+  echo "  /tmp       private RAM disk, gone when the VM stops"
+  echo "@@exit=0@@"
+fi
+
+# Restart the "machine". With reboot=k on the kernel command line this
+# resets the virtual keyboard controller, and Firecracker exits: the VM and
+# everything in it is gone.
+reboot -f

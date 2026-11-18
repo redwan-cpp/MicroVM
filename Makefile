@@ -21,7 +21,7 @@ TOOLS_BIN     := $(CURDIR)/bin/tools
 GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fmt tools firecracker e2e bench clean
+.PHONY: help build test lint fmt tools firecracker guest boot demo e2e bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -50,6 +50,16 @@ $(GOLANGCI_LINT):
 
 firecracker: ## Download the pinned Firecracker + jailer (fingerprint-checked)
 	./scripts/fetch-firecracker.sh
+
+guest: ## Download the guest kernel and build the guest root disk (no sudo)
+	./guest/fetch-kernel.sh
+	./guest/build-rootfs.sh
+
+boot: ## Boot one microVM by hand through Firecracker's API, then destroy it
+	./scripts/boot-vm.sh
+
+demo: ## Live demo, step by step (press Enter between steps)
+	./scripts/demo.sh
 
 e2e: ## Tests with real microVMs (not built yet: week 2)
 	@echo "e2e: skipped, nothing to run yet (arrives in week 2, needs KVM)"

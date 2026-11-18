@@ -4,7 +4,7 @@
 
 AI agents and scripts run code with our permissions, and one bad command can delete files or leak secrets. Containers share the host kernel, so a kernel bug can break out of them. Full VMs are safe but take seconds to start. MicroVM Sandbox gives **every run its own hardware-isolated microVM**. It restores the VM from a copy-on-write snapshot, applies a per-run policy (CPU, memory, files, network), runs the command and destroys everything afterwards.
 
-> **Status:** week 0 of 13. The three programs build, but so far they only print their version. Real microVMs arrive from week 1. See the [build plan](docs/build-plan.md).
+> **Status:** week 1 of 13. The three programs build, but so far they only print their version. `make boot` already boots a real Firecracker microVM by hand, runs one command in it and destroys it. See the [build plan](docs/build-plan.md).
 > **Security:** research and teaching project, **not audited**. See [SECURITY.md](SECURITY.md).
 
 ## How it works
@@ -40,6 +40,9 @@ Requires Linux with KVM and Go 1.27+.
 
 ```bash
 make firecracker  # pinned Firecracker + jailer into third_party/, SHA-256 checked
+make guest   # pinned guest kernel + rootless Alpine root disk into guest/out/
+make boot    # boot one microVM through Firecracker's API, run one job, destroy it
+make demo    # live walkthrough of the project, one step per Enter
 make build   # bin/sandboxd, bin/sandboxctl, bin/sandbox-agent
 make test    # unit tests, with the race detector
 make lint    # pinned golangci-lint
