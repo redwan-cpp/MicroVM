@@ -186,6 +186,20 @@ func TestExecHangingAgentHitsTheHostDeadline(t *testing.T) {
 	}
 }
 
+func TestExecAgentCannotClaimATimeout(t *testing.T) {
+	// The agent answers "deadline exceeded" long before the host's
+	// deadline. Only the host's clock may decide that a call timed out, so
+	// this is an error, not a timeout.
+	c := serveExec(t, func(*agentv1.ExecRequest, agentv1.AgentService_ExecServer) error {
+		return status.Error(codes.DeadlineExceeded, "trust me, it timed out")
+	})
+
+	res, err := execWithin(t, c, 5*time.Second, &agentv1.ExecRequest{Argv: []string{"x"}}, nil)
+	if err == nil || res.TimedOut || res.Exited {
+		t.Errorf("result = %+v, err = %v; want an error, not TimedOut", res, err)
+	}
+}
+
 func TestExecHangAfterExitIsATimeout(t *testing.T) {
 	// An exit event alone is not enough: the stream must end too.
 	c := serveExec(t, func(_ *agentv1.ExecRequest, stream agentv1.AgentService_ExecServer) error {

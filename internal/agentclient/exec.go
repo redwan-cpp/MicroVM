@@ -83,6 +83,7 @@ func (c *Client) Exec(ctx context.Context, req *agentv1.ExecRequest, stdout, std
 	// WithDeadline keeps ctx's deadline if it is sooner than ours.
 	ctx, cancel := context.WithDeadline(ctx, start.Add(timeout+DeadlineGrace))
 	defer cancel()
+	deadline, _ := ctx.Deadline() // the host's deadline for this call
 	// A second context, so that stopping the stream at the output cap is
 	// not mistaken for the deadline or for the caller's cancel.
 	streamCtx, stopStream := context.WithCancel(ctx)
@@ -107,10 +108,15 @@ func (c *Client) Exec(ctx context.Context, req *agentv1.ExecRequest, stdout, std
 		msg, err := stream.Recv()
 		if err != nil {
 			res := result()
+			// Was the host's deadline hit? The host's own clock decides, not
+			// the status code in err: the agent could send "deadline
+			// exceeded" whenever it likes. We look at the clock as well as
+			// at ctx, because ctx's timer may fire a moment after the
+			// deadline, while the agent (which got the same deadline) may
+			// already have ended the stream.
+			hitDeadline := errors.Is(ctx.Err(), context.DeadlineExceeded) || !time.Now().Before(deadline)
 			switch {
-			case errors.Is(err, io.EOF) && exit == nil:
-				return res, &ProtocolError{Reason: "the stream ended without an exit event"}
-			case errors.Is(err, io.EOF):
+			case errors.Is(err, io.EOF) && exit != nil:
 				// The normal end: one exit event, then the end of the stream.
 				res.Exited = true
 				res.ExitCode = int(exit.GetExitCode())
@@ -120,13 +126,13 @@ func (c *Client) Exec(ctx context.Context, req *agentv1.ExecRequest, stdout, std
 				res.AgentReportedTruncated = exit.GetOutputTruncated()
 				res.AgentReportedDuration = microseconds(exit.GetDurationUs())
 				return res, nil
-			case errors.Is(ctx.Err(), context.DeadlineExceeded):
-				// Our own clock decides, not the status code in err: the
-				// agent could send "deadline exceeded" whenever it likes.
+			case hitDeadline:
 				res.TimedOut = true
 				return res, nil
 			case ctx.Err() != nil:
 				return res, fmt.Errorf("agentclient: exec: %w", ctx.Err()) // the caller cancelled
+			case errors.Is(err, io.EOF):
+				return res, &ProtocolError{Reason: "the stream ended without an exit event"}
 			default:
 				return res, fmt.Errorf("agentclient: exec: %w", err)
 			}
