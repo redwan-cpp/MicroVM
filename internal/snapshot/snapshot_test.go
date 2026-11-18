@@ -268,6 +268,30 @@ func TestOpenStopsWhenTheContextEnds(t *testing.T) {
 	}
 }
 
+func TestLinkInto(t *testing.T) {
+	root := openState(t)
+	v := fakeVersion(t, root, Classes[0], testID)
+	_, dir, err := root.NewRunDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.LinkInto(dir); err != nil {
+		t.Fatalf("LinkInto: %v", err)
+	}
+	for _, name := range []string{StateName, MemName, RootfsName} {
+		var store, clone syscall.Stat_t
+		if syscall.Stat(v.Path(name), &store) != nil || syscall.Stat(filepath.Join(dir, name), &clone) != nil {
+			t.Fatalf("%s is missing", name)
+		}
+		if store.Ino != clone.Ino || store.Nlink != 2 {
+			t.Errorf("%s: inode %d vs %d, %d links; want the same file, 2 links", name, store.Ino, clone.Ino, store.Nlink)
+		}
+	}
+	if err := v.LinkInto(dir); err == nil {
+		t.Error("second LinkInto into the same folder succeeded, want an error")
+	}
+}
+
 func TestSetCurrentSwapsTheLink(t *testing.T) {
 	root := openState(t)
 	fakeVersion(t, root, Classes[0], "20261118T090000Z-aaaaaa")

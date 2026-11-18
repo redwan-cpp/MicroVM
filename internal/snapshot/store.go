@@ -33,6 +33,21 @@ type Version struct {
 // or RootfsName).
 func (v *Version) Path(name string) string { return filepath.Join(v.Dir, name) }
 
+// LinkInto hard-links the files a restore needs (vm.snap, mem.snap and
+// rootfs.ext4) into dir, a clone's run folder or chroot, under the names
+// the snapshot uses. They are links, never copies: every clone maps the
+// same mem.snap, so they share its page-cache pages (ADR-0003, decision
+// 3), and nothing is copied on the restore path. dir must be on the
+// store's filesystem (state.Open checks that for the state folder).
+func (v *Version) LinkInto(dir string) error {
+	for _, name := range []string{StateName, MemName, RootfsName} {
+		if err := linkFile(v.Path(name), filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Store is an opened, checked snapshot store. It is safe for concurrent
 // use: it never changes after Open.
 type Store struct {

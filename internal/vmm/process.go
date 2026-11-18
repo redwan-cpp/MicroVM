@@ -152,10 +152,12 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 }
 
 // waitForSocket waits until the API socket accepts connections.
+// Firecracker opens it a few milliseconds after it starts, and every
+// restore waits for this, so it looks often: every millisecond.
 func (p *Process) waitForSocket(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, socketWait)
 	defer cancel()
-	tick := time.NewTicker(10 * time.Millisecond)
+	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 
 	var d net.Dialer
