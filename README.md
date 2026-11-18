@@ -50,6 +50,7 @@ make boot    # boot one microVM through Firecracker's API, run one job, destroy 
 make demo    # live walkthrough of the project, one step per Enter
 make build   # bin/sandboxd, bin/sandboxctl, bin/sandbox-agent
 make test    # unit tests, with the race detector
+make e2e     # boot real microVMs and test the agent inside them (needs KVM; not run in GitHub CI)
 make lint    # pinned golangci-lint
 make         # list every target
 ```

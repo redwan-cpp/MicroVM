@@ -123,8 +123,10 @@ boot: ## Boot one microVM by hand through Firecracker's API, then destroy it
 demo: ## Live demo, step by step (press Enter between steps)
 	./scripts/demo.sh
 
-e2e: ## Tests with real microVMs (not built yet: week 2)
-	@echo "e2e: skipped, nothing to run yet (arrives in week 2, needs KVM)"
+# They need KVM and the guest image, so they never run in GitHub CI (CI only
+# checks that they compile, through `make lint`).
+e2e: guest ## Boot real microVMs and test the agent inside them (needs KVM)
+	go test -tags e2e -count=1 -v ./test/e2e/...
 
 bench: ## Speed benchmarks (not built yet: week 10)
 	@echo "bench: skipped, nothing to run yet (arrives in week 10)"
