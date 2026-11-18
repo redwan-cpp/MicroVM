@@ -33,23 +33,26 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] `guest/fetch-kernel.sh`: pinned guest kernel (Firecracker CI 6.1.155), SHA-256 pinned on first download
 - [x] `guest/build-rootfs.sh`: Alpine minirootfs (SHA-256 checked) → `mkfs.ext4 -d` inside a user namespace (rootless). Alpine instead of mmdebstrap for now: mmdebstrap isn't installed on the dev machine and installing it needs sudo. Revisit if the guest needs Debian packages.
 - [x] Boot the guest with `curl` on the Firecracker API socket: `scripts/boot-vm.sh` (`make boot`) prints every call
-- [ ] Write those calls up in learning doc 06
+- [x] Write those calls up in learning doc 06 (done in week 2: [`learn/06-firecracker-api.md`](learn/06-firecracker-api.md))
 - [x] `make demo`: step-by-step live demo for presentations (`scripts/demo.sh`)
-- [ ] Learning docs 05 (KVM), 06 (Firecracker and its API), 07 (reading Go code)
+- [ ] Learning docs 05 (KVM) and 07 (reading Go code): moved to a separate docs pass, not tied to a code week (06 is done, see above)
 
 ### Week 2: guest agent and VMM client
-- [ ] buf + protoc-gen-go pinned in the Makefile (`make generate`)
-- [ ] `proto/agent.proto`: Exec (streams stdout/stderr, then the exit code), Health, SyncTime, Reseed
-- [ ] `cmd/sandbox-agent`: static binary, gRPC over vsock, started by the guest's init
-- [ ] `internal/vsockconn`: host-side `CONNECT <port>` dialer
-- [ ] `internal/vmm`: Firecracker REST client over a Unix socket
-- [ ] Go integration test: cold boot → exec `echo hi` → shut down
-- [ ] Learning doc 08 (booting a guest, vsock and the agent)
+- [x] buf, protoc-gen-go and protoc-gen-go-grpc pinned in the Makefile (`make generate`; CI runs `make generate-check`)
+- [x] `proto/sandbox/agent/v1/agent.proto`: Exec (streams stdout/stderr, then the exit code), Health, SyncTime, Reseed
+- [x] `cmd/sandbox-agent` + `internal/agent`: static binary, gRPC over vsock port 1024, started by the guest's init (`sandbox_mode=agent`)
+- [x] `internal/vsockconn`: host-side `CONNECT <port>` dialer
+- [x] `internal/agentclient`: host-side client that enforces deadlines and output caps itself and trusts nothing the agent reports
+- [x] `internal/vmm`: Firecracker REST client over a Unix socket, plus the Firecracker process (run folder, console ring buffer, cleanup)
+- [x] Go integration test: cold boot → exec `echo hi` → shut down (`test/e2e`, `make e2e`; agent ready about 85 ms after InstanceStart)
+- [x] Learning doc 08 (booting a guest, vsock and the agent); [ADR-0004](adr/0004-alpine-guest-rootfs.md) (Alpine guest root disk)
+- [x] Week-1 review follow-ups: `scripts/boot-vm.sh` cleans guest console output, private `mktemp -d` run folder, curl timeouts
 
 ### Week 3: snapshots and the jailer
 - [ ] `internal/snapshot`: build a base snapshot per size class, write `manifest.json`
 - [ ] Restore a single clone and measure it
 - [ ] Jailer integration: chroot per clone, UID drop, cgroup v2, hard-linked memory file
+- [ ] `buf breaking` in CI against `main` (`.git#branch=main`, checkout with `fetch-depth: 0`), now that `agent/v1` is on main
 - [ ] Learning docs 09 (snapshots and copy-on-write) and 10 (the jailer)
 
 ### Week 4: **Demo 1**

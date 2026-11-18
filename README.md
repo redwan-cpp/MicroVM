@@ -4,7 +4,7 @@
 
 AI agents and scripts run code with our permissions, and one bad command can delete files or leak secrets. Containers share the host kernel, so a kernel bug can break out of them. Full VMs are safe but take seconds to start. MicroVM Sandbox gives **every run its own hardware-isolated microVM**. It restores the VM from a copy-on-write snapshot, applies a per-run policy (CPU, memory, files, network), runs the command and destroys everything afterwards.
 
-> **Status:** week 1 of 13. The three programs build, but so far they only print their version. `make boot` already boots a real Firecracker microVM by hand, runs one command in it and destroys it. See the [build plan](docs/build-plan.md).
+> **Status:** week 2 of 13. `sandbox-agent` runs inside the microVM: `make e2e` boots a real Firecracker VM, connects to the agent over gRPC on vsock, runs commands and streams their output back, then destroys the VM. The host enforces every limit itself. `sandboxd` and `sandboxctl` still only print their version (they arrive in week 4). See the [build plan](docs/build-plan.md).
 > **Security:** research and teaching project, **not audited**. See [SECURITY.md](SECURITY.md).
 
 ## How it works
@@ -45,13 +45,14 @@ Requires:
 
 ```bash
 make firecracker  # pinned Firecracker + jailer into third_party/, SHA-256 checked
-make guest   # pinned guest kernel + rootless Alpine root disk into guest/out/
+make guest   # pinned guest kernel + rootless Alpine root disk with sandbox-agent into guest/out/
 make boot    # boot one microVM through Firecracker's API, run one job, destroy it
 make demo    # live walkthrough of the project, one step per Enter
 make build   # bin/sandboxd, bin/sandboxctl, bin/sandbox-agent
+make generate # regenerate the Go code in internal/gen from proto/ (pinned buf)
 make test    # unit tests, with the race detector
 make e2e     # boot real microVMs and test the agent inside them (needs KVM; not run in GitHub CI)
-make lint    # pinned golangci-lint
+make lint    # pinned golangci-lint, buf lint and go vet
 make         # list every target
 ```
 
@@ -69,7 +70,7 @@ make         # list every target
 
 - [Build plan](docs/build-plan.md): week-by-week tasks, risks, hour log
 - [Threat model](docs/threat-model.md): attacker, trust boundaries, mitigations
-- Architecture decisions: [0001 Go](docs/adr/0001-go-for-all-components.md) · [0002 gRPC](docs/adr/0002-grpc-for-apis.md) · [0003 snapshot constraints](docs/adr/0003-snapshot-constraints.md)
+- Architecture decisions: [0001 Go](docs/adr/0001-go-for-all-components.md) · [0002 gRPC](docs/adr/0002-grpc-for-apis.md) · [0003 snapshot constraints](docs/adr/0003-snapshot-constraints.md) · [0004 Alpine guest](docs/adr/0004-alpine-guest-rootfs.md)
 - [Learning docs](docs/learn/README.md): how every part works, starting from zero with [the big picture](docs/learn/00-big-picture.md)
 
 ## Stack

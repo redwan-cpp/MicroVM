@@ -57,7 +57,11 @@ New rows get added as you reach new topics.
 4. [03 · The terminal](03-the-terminal.md): typing commands
 5. [04 · Containers vs virtual machines](04-containers-vs-vms.md): the core idea of the project
 
-**Then the project** (docs 05–18), written week by week as the code gets built. The [build plan](../build-plan.md) lists them.
+**Then the project** (docs 05–18), written week by week as the code gets built. The [build plan](../build-plan.md) lists them. So far:
+6. [06 · Firecracker and its API](06-firecracker-api.md): four requests turn an empty program into a running VM
+7. [08 · The guest agent and vsock](08-guest-vsock-agent.md): commands in, output out, and why the host trusts nothing it hears
+
+Docs 05 (KVM) and 07 (reading Go code) come in a separate docs pass.
 
 ## How to study
 

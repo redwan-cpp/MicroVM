@@ -114,7 +114,7 @@ cat <<EOF
 
   ${G}✓ week 0${N}   foundations: plan, ADRs, threat model, Go skeleton, CI, pinned tools
   ${G}✓ week 1${N}   pinned guest kernel, rootless root disk, boot by hand through the API
-    week 2   sandbox-agent inside the VM, gRPC over vsock (replaces the kernel command line)
+  ${G}✓ week 2${N}   sandbox-agent inside the VM, gRPC over vsock; the host enforces every limit (make e2e)
     week 3   snapshots + jailer: restore instead of boot; chroot, UID drop, cgroups
     week 4   ${B}Demo 1${N}: sandboxctl run, three clones at once from one snapshot
     week 8   ${B}Demo 2${N}: networking off by default, policies change the limits
