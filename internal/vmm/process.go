@@ -7,9 +7,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+)
+
+// The names of Firecracker's own files in its run folder. Firecracker runs
+// with the run folder as its working directory, and every path we give it
+// is one of these relative names (or another one, like rootfs.ext4), never
+// an absolute path: then the same names work unchanged in a jailer chroot
+// and in every clone of a snapshot (ADR-0003, ADR-0005).
+const (
+	// APISocketName is Firecracker's API socket.
+	APISocketName = "api.sock"
+	// VsockName is the conventional vsock Unix socket name (Vsock.UDSPath).
+	VsockName = "v.sock"
+	// LogName is Firecracker's own log file.
+	LogName = "firecracker.log"
 )
 
 const (
@@ -28,6 +45,37 @@ type Config struct {
 	// Binary is the path to the firecracker program, for example
 	// third_party/firecracker/firecracker.
 	Binary string
+	// RunDir is this VM's private run folder, for example a fresh
+	// state.Root.NewRunDir. It must already exist, on the same filesystem
+	// as the snapshot store. It is Firecracker's working directory and
+	// holds the API socket, the vsock socket, the log and the VM's files,
+	// all by relative names. Start takes it over: Stop, or a failed Start,
+	// deletes it with everything inside.
+	RunDir string
+
+	// Launcher, if set, starts Firecracker through another program, the
+	// jailer (internal/jailer), instead of running Binary directly. That
+	// program must exec Firecracker in place (the same PID, the same
+	// stdout and stderr) with RunDir as Firecracker's working directory;
+	// the jailer does, since RunDir is its chroot.
+	Launcher *Launcher
+	// LogOwner, if set, becomes the owner of the log file Start creates,
+	// so a Firecracker running as that (jailed) user can write it.
+	LogOwner *Owner
+}
+
+// Launcher is a program that starts Firecracker for us.
+type Launcher struct {
+	// Path is the program, for example third_party/firecracker/jailer.
+	Path string
+	// Args are its arguments, ending with "--". Start appends
+	// Firecracker's own arguments (--api-sock api.sock ...).
+	Args []string
+}
+
+// Owner is a numeric user and group ID.
+type Owner struct {
+	UID, GID int
 }
 
 // Process is one running Firecracker, with its own private run folder
@@ -48,18 +96,26 @@ type Process struct {
 // Start launches an empty Firecracker: no VM yet, just the API socket,
 // waiting for instructions (use Client, then Client().Start). ctx only
 // bounds the start-up; the process keeps running until Stop.
+//
+// Do not call Start from a goroutine that has called runtime.LockOSThread
+// and may exit while still locked: Go then ends that OS thread, and the
+// kernel sends Firecracker its parent-death signal (Pdeathsig, below),
+// which belongs to the thread that started it, not to our process. This
+// matters from week 8, when code that enters a network namespace has to
+// lock its thread.
 func Start(ctx context.Context, cfg Config) (*Process, error) {
-	// A fresh private folder per Firecracker, mode 0700 (MkdirTemp's
-	// default): no other user can see or touch the sockets inside. It is
-	// directly in the temp folder (usually /tmp) to keep socket paths short.
-	dir, err := os.MkdirTemp("", "mvm-")
-	if err != nil {
-		return nil, fmt.Errorf("vmm: create run folder: %w", err)
+	// The run folder comes from the caller (a fresh one per VM, mode 0700,
+	// under the state folder's runs/): no other user can see or touch the
+	// sockets inside, and it is on the same filesystem as the snapshot
+	// store, so the VM's files can be hard links.
+	dir := cfg.RunDir
+	if dir == "" {
+		return nil, fmt.Errorf("vmm: Config.RunDir is empty")
 	}
 	p := &Process{
 		dir:       dir,
 		console:   NewRingBuffer(consoleSize),
-		client:    NewClient(filepath.Join(dir, "api.sock")),
+		client:    NewClient(filepath.Join(dir, APISocketName)),
 		exited:    make(chan struct{}),
 		stopGrace: stopGrace,
 	}
@@ -71,8 +127,8 @@ func Start(ctx context.Context, cfg Config) (*Process, error) {
 }
 
 func (p *Process) start(ctx context.Context, cfg Config) error {
-	if len(p.VsockPath()) > maxSocketPath {
-		return fmt.Errorf("vmm: run folder path %s is too long for Unix sockets; set TMPDIR to a shorter folder", p.dir)
+	if len(p.APISocketPath()) > maxSocketPath {
+		return fmt.Errorf("vmm: run folder path %s is too long for Unix sockets; use a shorter state folder", p.dir)
 	}
 
 	// Firecracker wants its log file to exist already.
@@ -83,12 +139,32 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 	if err := logFile.Close(); err != nil {
 		return fmt.Errorf("vmm: create log file: %w", err)
 	}
+	if o := cfg.LogOwner; o != nil {
+		if err := os.Lchown(p.LogPath(), o.UID, o.GID); err != nil {
+			return fmt.Errorf("vmm: give the log file to %d:%d: %w", o.UID, o.GID, err)
+		}
+	}
 
-	cmd := exec.Command(cfg.Binary, //nolint:gosec // G204: the binary path comes from our own configuration
-		"--api-sock", p.APISocketPath(),
-		"--log-path", p.LogPath(),
+	// Relative names only: Firecracker resolves them against its working
+	// directory, the run folder.
+	args := []string{
+		"--api-sock", APISocketName,
+		"--log-path", LogName,
 		"--level", "Info",
-	)
+	}
+	program := cfg.Binary
+	if l := cfg.Launcher; l != nil {
+		program = l.Path
+		args = append(slices.Clone(l.Args), args...)
+	}
+	// os/exec would resolve a relative program path against cmd.Dir, the
+	// run folder, so make it absolute first.
+	program, err = filepath.Abs(program)
+	if err != nil {
+		return fmt.Errorf("vmm: %w", err)
+	}
+	cmd := exec.Command(program, args...) //nolint:gosec // G204: the program path comes from our own configuration
+	cmd.Dir = p.dir
 	// stdin is /dev/null (cmd.Stdin is nil). stdout and stderr carry the
 	// guest's serial console: the guest decides what is written there, so
 	// it goes into the ring buffer, which os/exec reads continuously.
@@ -101,13 +177,16 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 		// Firecracker too, so no VM is left behind (threat model T12).
 		// Linux sends it when the *thread* that started the process ends;
 		// Go keeps its threads alive, so in practice that means our process.
+		// The kernel forgets this setting when a process changes its user,
+		// so it does not survive the jailer's switch to the jailed UID:
+		// jailer mode cleans up through the clone's cgroup instead.
 		Pdeathsig: syscall.SIGKILL,
 	}
 	// Firecracker has no children, so its console pipe closes when it
 	// exits. WaitDelay is only a safety net.
 	cmd.WaitDelay = time.Second
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("vmm: start %s: %w", cfg.Binary, err)
+		return fmt.Errorf("vmm: start %s: %w", program, err)
 	}
 	p.cmd = cmd
 	go func() {
@@ -119,10 +198,12 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 }
 
 // waitForSocket waits until the API socket accepts connections.
+// Firecracker opens it a few milliseconds after it starts, and every
+// restore waits for this, so it looks often: every millisecond.
 func (p *Process) waitForSocket(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, socketWait)
 	defer cancel()
-	tick := time.NewTicker(10 * time.Millisecond)
+	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 
 	var d net.Dialer
@@ -183,17 +264,40 @@ func (p *Process) Pid() int { return p.cmd.Process.Pid }
 // Dir is the private run folder. Stop deletes it.
 func (p *Process) Dir() string { return p.dir }
 
-// APISocketPath is the path of Firecracker's API socket.
-func (p *Process) APISocketPath() string { return filepath.Join(p.dir, "api.sock") }
+// APISocketPath is the host path of Firecracker's API socket.
+func (p *Process) APISocketPath() string { return filepath.Join(p.dir, APISocketName) }
 
-// VsockPath is where to put the vsock Unix socket (Vsock.UDSPath) for this
-// VM. It lives in the run folder, so Stop removes it.
-func (p *Process) VsockPath() string { return filepath.Join(p.dir, "v.sock") }
+// VsockPath is the host path of the vsock Unix socket, for a VM whose
+// Vsock.UDSPath is VsockName. It lives in the run folder, so Stop removes
+// it. Dial the agent here (agentclient.Dial).
+func (p *Process) VsockPath() string { return filepath.Join(p.dir, VsockName) }
 
-// LogPath is Firecracker's own log file.
-func (p *Process) LogPath() string { return filepath.Join(p.dir, "firecracker.log") }
+// LogPath is the host path of Firecracker's own log file.
+func (p *Process) LogPath() string { return filepath.Join(p.dir, LogName) }
 
 // Console returns the last 64 KiB of the guest's serial console. The guest
 // wrote it, so it may hold anything, including terminal escape sequences:
-// clean it before showing it on a terminal.
+// clean it before showing it on a terminal (ConsoleTail does).
 func (p *Process) Console() []byte { return p.console.Bytes() }
+
+// ConsoleTail returns the last n bytes (at most) of the guest's console,
+// with control characters other than newline and tab removed, so it is
+// safe to put into an error message or a log.
+func (p *Process) ConsoleTail(n int) string {
+	return CleanConsole(p.console.Bytes(), n)
+}
+
+// CleanConsole returns the last n bytes (at most) of console output, with
+// control characters other than newline and tab removed: the guest wrote
+// it, and could use them to fake or hide terminal output.
+func CleanConsole(console []byte, n int) string {
+	if len(console) > n {
+		console = console[len(console)-n:]
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, string(console))
+}

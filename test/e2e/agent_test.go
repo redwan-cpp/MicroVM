@@ -25,7 +25,9 @@ import (
 
 	"github.com/redwan-cpp/MicroVM/internal/agent"
 	"github.com/redwan-cpp/MicroVM/internal/agentclient"
+	"github.com/redwan-cpp/MicroVM/internal/clone"
 	agentv1 "github.com/redwan-cpp/MicroVM/internal/gen/sandbox/agent/v1"
+	"github.com/redwan-cpp/MicroVM/internal/state"
 	"github.com/redwan-cpp/MicroVM/internal/vmm"
 	"github.com/redwan-cpp/MicroVM/internal/vsockconn"
 )
@@ -50,7 +52,30 @@ const (
 
 // artifacts are the files a VM is made of.
 type artifacts struct {
+	repo                        string // the repository root
 	firecracker, kernel, rootfs string
+}
+
+// repoRoot finds the repository: the nearest folder upwards from the
+// working directory whose go.mod declares our module. `go test` runs in
+// test/e2e, a compiled test binary (make e2e-jailer) in the repository.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		mod, err := os.ReadFile(filepath.Join(dir, "go.mod")) //nolint:gosec // G304: looking for our own go.mod
+		if err == nil && bytes.HasPrefix(mod, []byte("module github.com/redwan-cpp/MicroVM\n")) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("not inside the MicroVM repository (no go.mod with its module found upwards)")
+		}
+		dir = parent
+	}
 }
 
 // findArtifacts skips the test, with a hint, if anything is missing.
@@ -59,11 +84,9 @@ func findArtifacts(t *testing.T) artifacts {
 	if err := unix.Access("/dev/kvm", unix.R_OK|unix.W_OK); err != nil {
 		t.Skipf("no read-write access to /dev/kvm (%v): these tests need KVM", err)
 	}
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := repoRoot(t)
 	a := artifacts{
+		repo:        root,
 		firecracker: filepath.Join(root, "third_party", "firecracker", "firecracker"),
 		kernel:      filepath.Join(root, "guest", "out", "vmlinux"),
 		rootfs:      filepath.Join(root, "guest", "out", "rootfs.ext4"),
@@ -79,20 +102,47 @@ func findArtifacts(t *testing.T) artifacts {
 	return a
 }
 
+// newStateRoot opens a fresh state folder for one test, under guest/out/
+// next to the guest image: the real layout, on the same filesystem as the
+// root disk (never /tmp, which may be another filesystem). Cleanup deletes
+// it.
+func newStateRoot(t *testing.T, a artifacts) *state.Root {
+	t.Helper()
+	dir, err := os.MkdirTemp(filepath.Dir(a.rootfs), "e2e-state-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("delete the test's state folder: %v", err)
+		}
+	})
+	root, err := state.Open(dir, state.Options{})
+	if err != nil {
+		t.Fatalf("open the state folder: %v", err)
+	}
+	return root
+}
+
 // vm is one running microVM with a connected agent.
 type vm struct {
-	proc  *vmm.Process
-	agent *agentclient.Client
+	proc    *vmm.Process // nil for a VM the test started some other way
+	agent   *agentclient.Client
+	console func() []byte // the guest console, for error messages
 }
 
 // bootVM starts Firecracker, configures and starts a VM, and waits until
 // the agent answers. Cleanup stops the VM even if the test fails.
-func bootVM(t *testing.T, a artifacts) *vm {
+func bootVM(t *testing.T, a artifacts, root *state.Root) *vm {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	proc, err := vmm.Start(ctx, vmm.Config{Binary: a.firecracker})
+	_, dir, err := root.NewRunDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc, err := vmm.Start(ctx, vmm.Config{Binary: a.firecracker, RunDir: dir})
 	if err != nil {
 		t.Fatalf("start firecracker: %v", err)
 	}
@@ -112,7 +162,7 @@ func bootVM(t *testing.T, a artifacts) *vm {
 			return api.PutDrive(ctx, vmm.Drive{DriveID: "rootfs", PathOnHost: a.rootfs, IsRootDevice: true, IsReadOnly: true})
 		},
 		func() error {
-			return api.PutVsock(ctx, vmm.Vsock{GuestCID: guestCID, UDSPath: proc.VsockPath()})
+			return api.PutVsock(ctx, vmm.Vsock{GuestCID: guestCID, UDSPath: vmm.VsockName}) // in the run folder
 		},
 	} {
 		if err := step(); err != nil {
@@ -122,45 +172,47 @@ func bootVM(t *testing.T, a artifacts) *vm {
 
 	started := time.Now()
 	if err := api.Start(ctx); err != nil {
-		t.Fatalf("InstanceStart: %v\nconsole:\n%s", err, consoleTail(proc))
+		t.Fatalf("InstanceStart: %v\nconsole:\n%s", err, consoleTail(proc.Console()))
 	}
-	client := waitForAgent(t, proc, started)
+	client := waitForAgent(t, proc.VsockPath(), proc.Done(), proc.Console, started)
 	t.Cleanup(func() { _ = client.Close() })
 	t.Logf("InstanceStart → agent ready: %v", time.Since(started).Round(time.Millisecond))
-	return &vm{proc: proc, agent: client}
+	return &vm{proc: proc, agent: client, console: proc.Console}
 }
 
-// waitForAgent dials the agent until it answers Health, for at most
-// readyTimeout after InstanceStart. While the guest boots, the vsock
-// socket may not exist yet (ENOENT), or nothing may listen on the port yet
-// (vsockconn.ErrNotReady); both are worth another try.
-func waitForAgent(t *testing.T, proc *vmm.Process, started time.Time) *agentclient.Client {
+// waitForAgent dials the agent behind the vsock socket vsockPath until it
+// answers Health, for at most readyTimeout after started (InstanceStart or
+// the snapshot load). While the guest boots, the vsock socket may not exist
+// yet (ENOENT), or nothing may listen on the port yet
+// (vsockconn.ErrNotReady); both are worth another try. done is closed when
+// the VM's Firecracker exits; console returns its console output.
+func waitForAgent(t *testing.T, vsockPath string, done <-chan struct{}, console func() []byte, started time.Time) *agentclient.Client {
 	t.Helper()
 	ctx, cancel := context.WithDeadline(t.Context(), started.Add(readyTimeout))
 	defer cancel()
 
 	for {
-		client, err := agentclient.Dial(ctx, proc.VsockPath(), agent.Port)
+		client, err := agentclient.Dial(ctx, vsockPath, agent.Port)
 		if err == nil {
 			if _, err = client.Health(ctx); err == nil {
 				return client
 			}
 			_ = client.Close()
-			t.Fatalf("connected to the agent, but Health failed: %v\nconsole:\n%s", err, consoleTail(proc))
+			t.Fatalf("connected to the agent, but Health failed: %v\nconsole:\n%s", err, consoleTail(console()))
 		}
 		retry := errors.Is(err, vsockconn.ErrNotReady) ||
 			errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
 		if !retry {
-			t.Fatalf("dial the agent: %v\nconsole:\n%s", err, consoleTail(proc))
+			t.Fatalf("dial the agent: %v\nconsole:\n%s", err, consoleTail(console()))
 		}
 
 		select {
-		case <-proc.Done():
+		case <-done:
 			t.Fatalf("the VM stopped before the agent answered (is the agent in the image? run make guest)\nconsole:\n%s",
-				consoleTail(proc))
+				consoleTail(console()))
 		case <-ctx.Done():
 			t.Fatalf("the agent did not answer within %v of InstanceStart (last error: %v)\n"+
-				"is the agent in the image? run make guest\nconsole:\n%s", readyTimeout, err, consoleTail(proc))
+				"is the agent in the image? run make guest\nconsole:\n%s", readyTimeout, err, consoleTail(console()))
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -174,9 +226,22 @@ func (v *vm) exec(t *testing.T, d time.Duration, req *agentv1.ExecRequest) (agen
 	var stdout, stderr bytes.Buffer
 	res, err := v.agent.Exec(ctx, req, &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("Exec(%q): %v\nconsole:\n%s", req.GetArgv(), err, consoleTail(v.proc))
+		t.Fatalf("Exec(%q): %v\nconsole:\n%s", req.GetArgv(), err, consoleTail(v.console()))
 	}
 	return res, stdout.String(), stderr.String()
+}
+
+// cloneExec runs argv in c with a 10 s deadline and returns its stdout.
+func cloneExec(t *testing.T, c *clone.Clone, argv ...string) (clone.ExecResult, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var out strings.Builder
+	res, err := c.Exec(ctx, &agentv1.ExecRequest{Argv: argv}, &out, nil)
+	if err != nil {
+		t.Fatalf("Exec(%q): %v\nconsole:\n%s", argv, err, c.ConsoleTail(4096))
+	}
+	return res, out.String()
 }
 
 // process is one line of `ps -o pid,stat,args` in the guest.
@@ -209,7 +274,8 @@ func (v *vm) guestProcesses(t *testing.T) []process {
 }
 
 func TestAgentInARealVM(t *testing.T) {
-	v := bootVM(t, findArtifacts(t))
+	a := findArtifacts(t)
+	v := bootVM(t, a, newStateRoot(t, a))
 
 	t.Run("Health", func(t *testing.T) {
 		resp, err := v.agent.Health(t.Context())
@@ -334,11 +400,10 @@ func TestAgentInARealVM(t *testing.T) {
 	}
 }
 
-// consoleTail returns the end of the guest console, cleaned for printing:
+// consoleTail returns the end of a guest console, cleaned for printing:
 // the guest wrote it, so control characters (terminal escape sequences)
 // are removed.
-func consoleTail(p *vmm.Process) string {
-	console := p.Console()
+func consoleTail(console []byte) string {
 	if len(console) > 4096 {
 		console = console[len(console)-4096:]
 	}

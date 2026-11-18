@@ -3,10 +3,12 @@ version: "2"
 
 run:
   # Also check the end-to-end tests in test/e2e. They only build with the
-  # e2e tag (they need KVM and never run in CI), but they must still compile
-  # and pass the linters.
+  # e2e tag (they need KVM and never run in CI), and the jailer test also
+  # with the jailer tag (it needs root), but they must still compile and
+  # pass the linters.
   build-tags:
     - e2e
+    - jailer
 
 linters:
   # "standard" = errcheck, govet, ineffassign, staticcheck, unused.

@@ -35,3 +35,10 @@ func TestRingBuffer(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanConsole(t *testing.T) {
+	got := CleanConsole([]byte("old line\nkeep\x1b[2J this\ttab\r\n"), 19)
+	if want := "keep[2J this\ttab\n"; got != want {
+		t.Errorf("CleanConsole = %q, want %q", got, want)
+	}
+}

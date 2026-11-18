@@ -49,11 +49,14 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] Week-1 review follow-ups: `scripts/boot-vm.sh` cleans guest console output, private `mktemp -d` run folder, curl timeouts
 
 ### Week 3: snapshots and the jailer
-- [ ] `internal/snapshot`: build a base snapshot per size class, write `manifest.json`
-- [ ] Restore a single clone and measure it
-- [ ] Jailer integration: chroot per clone, UID drop, cgroup v2, hard-linked memory file
-- [ ] `buf breaking` in CI against `main` (`.git#branch=main`, checkout with `fetch-depth: 0`), now that `agent/v1` is on main
-- [ ] Learning docs 09 (snapshots and copy-on-write) and 10 (the jailer)
+- [x] Spike (`test/e2e/spike_test.go`): Firecracker v1.17 keeps relative paths in snapshots, restores from 0444 store files, and VMGenID reseeds the guest kernel on restore
+- [x] One state folder on one filesystem (`internal/state`, `MICROVM_STATE_DIR`, default `guest/out/state`): `snapshots/`, `runs/`, `jail/`, checked for hard links, socket-path length and (jailer mode) nodev
+- [x] `internal/snapshot`: build a base snapshot per size class (small, medium), versioned store with a `current` symlink, files 0444, `manifest.json` with hashes checked once when the store is opened; `make snapshots`
+- [x] Restore a single clone and measure it (`internal/clone`): hard links, LoadSnapshot, agent, de-twin (SyncTime + Reseed); about 15–20 ms in rootless mode against an 80 ms cold boot (InstanceStart → agent ready)
+- [x] Jailer integration (`internal/jailer`, jailer mode in `internal/clone`): chroot per clone, UID drop (70000), cgroup v2 limits per size class, hard-linked read-only memory file, `cgroup.kill` cleanup; its real-VM test runs by hand with sudo (`make e2e-jailer`), never in CI. Two modes, one snapshot: [ADR-0005](adr/0005-rootless-and-jailer-modes.md)
+- [x] `buf breaking` in `make lint` and CI against `origin/main` (`.git#branch=origin/main`, checkout with `fetch-depth: 0`)
+- [x] Learning docs 09 (snapshots and copy-on-write) and 10 (the jailer); threat model: T9 counted in jailer mode only
+- [x] Week-2 review follow-ups: CI tools cache keyed on `go.mod` too, exit code (-1..255) and signal (0..64) checks in `agentclient`, Firecracker's log in the run folder under the state folder, a `LockOSThread` warning on `vmm.Start`
 
 ### Week 4: **Demo 1**
 - [ ] `proto/sandbox.proto` + `sandboxd` gRPC server on `/run/sandboxd/sandboxd.sock`
@@ -110,8 +113,9 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 | Risk | Status | Fallback |
 |------|--------|----------|
 | KVM missing on the host | **Closed (wk 0):** KVM, nested virtualization and vhost-vsock all work | — |
-| Snapshot restore is slow or fails | Test in weeks 1–3 | Report cold-boot numbers only |
-| Snapshot paths collide between clones | Designed for ([ADR-0003](adr/0003-snapshot-constraints.md)) | Restore clones one at a time |
+| Snapshot restore is slow or fails | **Closed (wk 3):** a restore takes about 15–20 ms, rootless | Report cold-boot numbers only |
+| Snapshot paths collide between clones | **Closed (wk 3):** relative paths in every snapshot, one folder per clone ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) | Restore clones one at a time |
+| Jailer needs root on the demo machine | Open: jailer mode is tested by hand with sudo (`make e2e-jailer`) | Rootless mode, said out loud ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) |
 | Networking takes too long | — | Keep networking off and say so in the report |
 | Scope creep | Freeze after week 4 | "Later" list |
 | Overclaiming security | [Threat model](threat-model.md), [SECURITY.md](../SECURITY.md) | State that it is not audited |
@@ -123,6 +127,8 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 | 0 | | |
 
 ## Later (after the freeze)
+- Rootless hardening: Landlock and a user namespace around Firecracker, so rootless mode gets some of jailer mode's confinement
+- Jailer `--new-pid-ns`, with pidfd-based process handling (the jailer forks, so the PID changes)
 - Lazy memory loading with userfaultfd (UFFD) for faster restores
 - Our own minimal guest kernel config
 - Stage 2 multi-host prototype (worker registry and scheduler)
