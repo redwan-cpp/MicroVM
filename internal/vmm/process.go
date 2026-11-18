@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -51,6 +52,30 @@ type Config struct {
 	// all by relative names. Start takes it over: Stop, or a failed Start,
 	// deletes it with everything inside.
 	RunDir string
+
+	// Launcher, if set, starts Firecracker through another program, the
+	// jailer (internal/jailer), instead of running Binary directly. That
+	// program must exec Firecracker in place (the same PID, the same
+	// stdout and stderr) with RunDir as Firecracker's working directory;
+	// the jailer does, since RunDir is its chroot.
+	Launcher *Launcher
+	// LogOwner, if set, becomes the owner of the log file Start creates,
+	// so a Firecracker running as that (jailed) user can write it.
+	LogOwner *Owner
+}
+
+// Launcher is a program that starts Firecracker for us.
+type Launcher struct {
+	// Path is the program, for example third_party/firecracker/jailer.
+	Path string
+	// Args are its arguments, ending with "--". Start appends
+	// Firecracker's own arguments (--api-sock api.sock ...).
+	Args []string
+}
+
+// Owner is a numeric user and group ID.
+type Owner struct {
+	UID, GID int
 }
 
 // Process is one running Firecracker, with its own private run folder
@@ -107,20 +132,31 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 	if err := logFile.Close(); err != nil {
 		return fmt.Errorf("vmm: create log file: %w", err)
 	}
-
-	// os/exec would resolve a relative program path against cmd.Dir, the
-	// run folder, so make it absolute first.
-	binary, err := filepath.Abs(cfg.Binary)
-	if err != nil {
-		return fmt.Errorf("vmm: %w", err)
+	if o := cfg.LogOwner; o != nil {
+		if err := os.Lchown(p.LogPath(), o.UID, o.GID); err != nil {
+			return fmt.Errorf("vmm: give the log file to %d:%d: %w", o.UID, o.GID, err)
+		}
 	}
+
 	// Relative names only: Firecracker resolves them against its working
 	// directory, the run folder.
-	cmd := exec.Command(binary, //nolint:gosec // G204: the binary path comes from our own configuration
+	args := []string{
 		"--api-sock", APISocketName,
 		"--log-path", LogName,
 		"--level", "Info",
-	)
+	}
+	program := cfg.Binary
+	if l := cfg.Launcher; l != nil {
+		program = l.Path
+		args = append(slices.Clone(l.Args), args...)
+	}
+	// os/exec would resolve a relative program path against cmd.Dir, the
+	// run folder, so make it absolute first.
+	program, err = filepath.Abs(program)
+	if err != nil {
+		return fmt.Errorf("vmm: %w", err)
+	}
+	cmd := exec.Command(program, args...) //nolint:gosec // G204: the program path comes from our own configuration
 	cmd.Dir = p.dir
 	// stdin is /dev/null (cmd.Stdin is nil). stdout and stderr carry the
 	// guest's serial console: the guest decides what is written there, so
@@ -134,13 +170,16 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 		// Firecracker too, so no VM is left behind (threat model T12).
 		// Linux sends it when the *thread* that started the process ends;
 		// Go keeps its threads alive, so in practice that means our process.
+		// The kernel forgets this setting when a process changes its user,
+		// so it does not survive the jailer's switch to the jailed UID:
+		// jailer mode cleans up through the clone's cgroup instead.
 		Pdeathsig: syscall.SIGKILL,
 	}
 	// Firecracker has no children, so its console pipe closes when it
 	// exits. WaitDelay is only a safety net.
 	cmd.WaitDelay = time.Second
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("vmm: start %s: %w", cfg.Binary, err)
+		return fmt.Errorf("vmm: start %s: %w", program, err)
 	}
 	p.cmd = cmd
 	go func() {

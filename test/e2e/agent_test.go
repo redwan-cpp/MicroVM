@@ -25,6 +25,7 @@ import (
 
 	"github.com/redwan-cpp/MicroVM/internal/agent"
 	"github.com/redwan-cpp/MicroVM/internal/agentclient"
+	"github.com/redwan-cpp/MicroVM/internal/clone"
 	agentv1 "github.com/redwan-cpp/MicroVM/internal/gen/sandbox/agent/v1"
 	"github.com/redwan-cpp/MicroVM/internal/state"
 	"github.com/redwan-cpp/MicroVM/internal/vmm"
@@ -51,7 +52,30 @@ const (
 
 // artifacts are the files a VM is made of.
 type artifacts struct {
+	repo                        string // the repository root
 	firecracker, kernel, rootfs string
+}
+
+// repoRoot finds the repository: the nearest folder upwards from the
+// working directory whose go.mod declares our module. `go test` runs in
+// test/e2e, a compiled test binary (make e2e-jailer) in the repository.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		mod, err := os.ReadFile(filepath.Join(dir, "go.mod")) //nolint:gosec // G304: looking for our own go.mod
+		if err == nil && bytes.HasPrefix(mod, []byte("module github.com/redwan-cpp/MicroVM\n")) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("not inside the MicroVM repository (no go.mod with its module found upwards)")
+		}
+		dir = parent
+	}
 }
 
 // findArtifacts skips the test, with a hint, if anything is missing.
@@ -60,11 +84,9 @@ func findArtifacts(t *testing.T) artifacts {
 	if err := unix.Access("/dev/kvm", unix.R_OK|unix.W_OK); err != nil {
 		t.Skipf("no read-write access to /dev/kvm (%v): these tests need KVM", err)
 	}
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := repoRoot(t)
 	a := artifacts{
+		repo:        root,
 		firecracker: filepath.Join(root, "third_party", "firecracker", "firecracker"),
 		kernel:      filepath.Join(root, "guest", "out", "vmlinux"),
 		rootfs:      filepath.Join(root, "guest", "out", "rootfs.ext4"),
@@ -207,6 +229,19 @@ func (v *vm) exec(t *testing.T, d time.Duration, req *agentv1.ExecRequest) (agen
 		t.Fatalf("Exec(%q): %v\nconsole:\n%s", req.GetArgv(), err, consoleTail(v.console()))
 	}
 	return res, stdout.String(), stderr.String()
+}
+
+// cloneExec runs argv in c with a 10 s deadline and returns its stdout.
+func cloneExec(t *testing.T, c *clone.Clone, argv ...string) (clone.ExecResult, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var out strings.Builder
+	res, err := c.Exec(ctx, &agentv1.ExecRequest{Argv: argv}, &out, nil)
+	if err != nil {
+		t.Fatalf("Exec(%q): %v\nconsole:\n%s", argv, err, c.ConsoleTail(4096))
+	}
+	return res, out.String()
 }
 
 // process is one line of `ps -o pid,stat,args` in the guest.

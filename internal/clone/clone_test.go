@@ -307,3 +307,46 @@ func assertGone(t *testing.T, dir string, pid int) {
 		t.Errorf("run folder %s still exists after Destroy (%v)", dir, err)
 	}
 }
+
+func TestJailerModeNeedsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root")
+	}
+	store := newStore(t)
+	_, err := Restore(t.Context(), store, "small", Options{
+		Firecracker: os.Args[0],
+		Jailer:      &JailerOptions{Binary: "/nonexistent/jailer", UID: 70000, GID: 70000},
+	})
+	if err == nil || !strings.Contains(err.Error(), "needs root") {
+		t.Errorf("Restore in jailer mode without root: %v, want a needs-root error", err)
+	}
+	if entries, _ := os.ReadDir(store.Root().JailDir()); len(entries) != 0 {
+		t.Errorf("jail/ holds %v, want nothing", entries)
+	}
+}
+
+func TestJailCleanupIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	// A jail whose folder and cgroup never came to be: nothing to do.
+	j := &jail{dir: filepath.Join(dir, "jail"), cgroup: filepath.Join(dir, "cgroup")}
+	if err := j.kill(); err != nil {
+		t.Errorf("kill without a cgroup: %v", err)
+	}
+	if err := j.remove(); err != nil {
+		t.Errorf("remove without a folder or cgroup: %v", err)
+	}
+
+	// kill writes "1" to cgroup.kill.
+	if err := os.Mkdir(j.cgroup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(j.cgroup, "cgroup.kill"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.kill(); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(j.cgroup, "cgroup.kill")); string(got) != "1" {
+		t.Errorf("cgroup.kill holds %q, want 1", got)
+	}
+}

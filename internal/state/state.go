@@ -75,7 +75,8 @@ type Options struct {
 
 // Root is an opened, checked state folder.
 type Root struct {
-	dir string
+	dir    string
+	jailer bool // Open checked what jailer mode needs
 }
 
 // Open creates the state folder dir and its subfolders if they are missing
@@ -119,6 +120,7 @@ func Open(dir string, opts Options) (*Root, error) {
 		if err := checkNodev(r.JailDir(), sfs.Flags); err != nil {
 			return nil, err
 		}
+		r.jailer = true
 	}
 	return r, nil
 }
@@ -168,6 +170,10 @@ func checkNodev(dir string, flags int64) error {
 	}
 	return nil
 }
+
+// CheckedForJailer reports whether Open checked this folder for jailer
+// mode (Options.Jailer).
+func (r *Root) CheckedForJailer() bool { return r.jailer }
 
 // Dir is the state folder itself, as an absolute path.
 func (r *Root) Dir() string { return r.dir }

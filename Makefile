@@ -38,7 +38,7 @@ TOOLS              := $(GOLANGCI_LINT) $(BUF) $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_G
 GEN_DIR := internal/gen
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fmt generate generate-check tools firecracker guest snapshots boot demo e2e bench clean
+.PHONY: help build test lint fmt generate generate-check tools firecracker guest snapshots boot demo e2e e2e-jailer bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -52,11 +52,13 @@ test: ## Run the unit tests (with the race detector)
 	go test -race -count=1 ./...
 
 # `-tags e2e` also checks test/e2e, which only builds with that tag (it
-# needs KVM, so it never runs in CI, but it must still compile).
+# needs KVM, so it never runs in CI, but it must still compile), and
+# `-tags 'e2e jailer'` adds the jailer test (it needs root as well).
 lint: $(GOLANGCI_LINT) $(BUF) ## Check the code for mistakes and style problems
 	$(BUF) lint
 	go vet ./...
 	go vet -tags e2e ./...
+	go vet -tags 'e2e jailer' ./...
 	$(GOLANGCI_LINT) run ./...
 
 fmt: $(GOLANGCI_LINT) ## Auto-format all Go code
@@ -132,6 +134,14 @@ demo: ## Live demo, step by step (press Enter between steps)
 # checks that they compile, through `make lint`).
 e2e: guest ## Boot real microVMs and test the agent inside them (needs KVM)
 	go test -tags e2e -count=1 -v ./test/e2e/...
+
+# Jailer mode needs root, and nothing is ever built as root. So the test is
+# compiled into one binary as you, against the snapshots `make snapshots`
+# built as you, and only that binary runs with sudo. As root it creates
+# only a jail folder in guest/out/state/jail/ and a cgroup, and removes both.
+e2e-jailer: snapshots ## Test jailer mode on a real microVM: builds as you, then runs one test binary with sudo
+	go test -c -tags 'e2e jailer' -o bin/e2e-jailer.test ./test/e2e
+	sudo bin/e2e-jailer.test -test.run Jailer -test.v
 
 bench: ## Speed benchmarks (not built yet: week 10)
 	@echo "bench: skipped, nothing to run yet (arrives in week 10)"

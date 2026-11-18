@@ -109,11 +109,23 @@ func TestOpenChecksNodevInJailerMode(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	if _, err := Open(dir, Options{}); err != nil {
-		t.Errorf("rootless Open: %v, want nodev to be fine", err)
+	if r, err := Open(dir, Options{}); err != nil || r.CheckedForJailer() {
+		t.Errorf("rootless Open: %v, want nodev to be fine (and not checked for the jailer)", err)
 	}
 	if _, err := Open(dir, Options{Jailer: true}); err == nil || !strings.Contains(err.Error(), "nodev") {
 		t.Errorf("jailer Open: %v, want a nodev error", err)
+	}
+}
+
+func TestCheckedForJailer(t *testing.T) {
+	dir := t.TempDir()
+	var sfs unix.Statfs_t
+	if err := unix.Statfs(dir, &sfs); err != nil || sfs.Flags&unix.ST_NODEV != 0 {
+		t.Skip("the test folder is on a nodev filesystem here")
+	}
+	r, err := Open(dir, Options{Jailer: true})
+	if err != nil || !r.CheckedForJailer() {
+		t.Errorf("Open with Jailer: %v, checked %v; want it checked", err, r != nil && r.CheckedForJailer())
 	}
 }
 

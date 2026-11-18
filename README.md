@@ -51,10 +51,24 @@ make demo    # live walkthrough of the project, one step per Enter
 make build   # bin/sandboxd, bin/sandboxctl, bin/sandbox-agent
 make generate # regenerate the Go code in internal/gen from proto/ (pinned buf)
 make test    # unit tests, with the race detector
-make e2e     # boot real microVMs and test the agent inside them (needs KVM; not run in GitHub CI)
+make snapshots # build the base snapshots (small, medium) into guest/out/state (needs KVM)
+make e2e     # boot and restore real microVMs and test the agent inside them (needs KVM; not run in GitHub CI)
+make e2e-jailer # the same restore in jailer mode (needs root, see below)
 make lint    # pinned golangci-lint, buf lint and go vet
 make         # list every target
 ```
+
+### Jailer mode (needs root)
+
+Everything above runs as your own user: the clones run in **rootless mode**. **Jailer mode** puts each clone's Firecracker in a chroot, as an unprivileged user, in its own cgroup ([ADR-0005](docs/adr/0005-rootless-and-jailer-modes.md)). The jailer has to start as root. Nothing is ever built as root, so the test is compiled into one binary as you, and only that binary runs with sudo:
+
+```bash
+make snapshots                     # as yourself: the store the test restores from
+go test -c -tags 'e2e jailer' -o bin/e2e-jailer.test ./test/e2e   # as yourself
+sudo bin/e2e-jailer.test -test.run Jailer -test.v                 # the only step that runs as root
+```
+
+`make e2e-jailer` runs exactly these three steps (it asks for your sudo password at the last one). As root, the test creates only a jail folder under `guest/out/state/jail/` and a cgroup under `/sys/fs/cgroup/microvm/`, and removes both. If a cleanup fails, it prints the `sudo rm -rf …` or `sudo rmdir …` that finishes the job. Without root, the binary skips the test.
 
 ## Roadmap
 

@@ -62,6 +62,7 @@ func fakeFirecracker(ignoreSIGTERM bool) {
 	}
 	cwd, _ := os.Getwd()
 	fmt.Println("fake console: hello on stdout, cwd=" + cwd)
+	fmt.Println("args=" + strings.Join(os.Args[1:], " "))
 	fmt.Fprintln(os.Stderr, "fake console: hello on stderr")
 	srv := &http.Server{
 		Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
@@ -171,6 +172,32 @@ func TestProcessStartFailsWithoutBinary(t *testing.T) {
 		t.Errorf("err = %v, want a not-found error", err)
 	}
 	assertEmpty(t, tmp)
+}
+
+func TestProcessStartsThroughALauncher(t *testing.T) {
+	// The "launcher" is the fake itself: it gets the launcher's arguments
+	// first, then "--", then Firecracker's.
+	tmp := t.TempDir()
+	t.Setenv(fakeEnv, "serve")
+	self := Owner{UID: os.Getuid(), GID: os.Getgid()} // the only owner a non-root test may give
+	p, err := Start(t.Context(), Config{
+		Binary:   "/nonexistent/firecracker", // unused: the launcher runs instead
+		RunDir:   newRunDir(t, tmp),
+		Launcher: &Launcher{Path: os.Args[0], Args: []string{"--jail-me", "--"}},
+		LogOwner: &self,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+	want := "args=--jail-me -- --api-sock api.sock --log-path firecracker.log --level Info\n"
+	waitFor(t, "the launcher's arguments on the console", func() bool {
+		return bytes.Contains(p.Console(), []byte(want))
+	})
+	var st syscall.Stat_t
+	if err := syscall.Stat(p.LogPath(), &st); err != nil || int(st.Uid) != self.UID || int(st.Gid) != self.GID {
+		t.Errorf("log file owner %d:%d (%v), want %d:%d", st.Uid, st.Gid, err, self.UID, self.GID)
+	}
 }
 
 func TestBinaryVersion(t *testing.T) {
