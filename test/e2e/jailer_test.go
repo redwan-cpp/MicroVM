@@ -72,7 +72,27 @@ func TestJailerRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, err := clone.Restore(ctx, store, "small", clone.Options{
+	// Every jail folder and every clone cgroup goes into one of these two
+	// shared parents, which the jailer creates as root. The cleanup is
+	// registered before Restore, so that a run that fails halfway also
+	// removes them, or says exactly what is left and how to remove it.
+	jailParent := filepath.Join(realPath(t, root.JailDir()), "firecracker")
+	cgroupParent := filepath.Join(cgroupRoot(t), jailer.ParentCgroup)
+	var c *clone.Clone
+	t.Cleanup(func() {
+		if c != nil {
+			if err := c.Destroy(); err != nil {
+				t.Errorf("Destroy: %v", err)
+			}
+		}
+		// rmdir only removes an empty folder or cgroup, so this never
+		// deletes anything that was left behind; errors are expected then.
+		_ = syscall.Rmdir(jailParent)
+		_ = syscall.Rmdir(cgroupParent)
+		reportLeftovers(t, jailParent, cgroupParent)
+	})
+
+	c, err = clone.Restore(ctx, store, "small", clone.Options{
 		Firecracker: a.firecracker,
 		Jailer:      &clone.JailerOptions{Binary: jailerBin, UID: jailer.DefaultUID, GID: jailer.DefaultGID},
 	})
@@ -80,15 +100,6 @@ func TestJailerRestore(t *testing.T) {
 		t.Fatalf("restore in jailer mode: %v", err)
 	}
 	jailDir, cgroupDir, pid := c.JailDir(), c.CgroupDir(), c.Pid()
-	t.Cleanup(func() {
-		if err := c.Destroy(); err != nil {
-			t.Errorf("Destroy: %v", err)
-		}
-		reportLeftovers(t, jailDir, cgroupDir)
-		// The shared parents are empty now; leave the host as we found it.
-		_ = syscall.Rmdir(filepath.Join(root.JailDir(), "firecracker"))
-		_ = syscall.Rmdir(filepath.Dir(cgroupDir))
-	})
 	t.Logf("restore: %v", c.Timings())
 	if c.Mode() != clone.Jailer || c.Timings().Mode != clone.Jailer {
 		t.Errorf("mode %q, timings mode %q; want jailer", c.Mode(), c.Timings().Mode)
@@ -103,6 +114,10 @@ func TestJailerRestore(t *testing.T) {
 					break
 				}
 			}
+		}
+		// No supplementary groups either: none of root's may survive.
+		if groups := procStatus(t, pid, "Groups:"); len(groups) != 0 {
+			t.Errorf("Firecracker keeps the supplementary groups %v, want none", groups)
 		}
 	})
 
@@ -198,14 +213,53 @@ func procStatus(t *testing.T, pid int, key string) []string {
 	return nil
 }
 
-// reportLeftovers fails the test for every path that is still there and
-// prints the command that removes it by hand.
-func reportLeftovers(t *testing.T, jailDir, cgroupDir string) {
+// reportLeftovers fails the test for everything still in the two shared
+// parents (or the parents themselves) and prints the exact commands that
+// remove it by hand.
+func reportLeftovers(t *testing.T, jailParent, cgroupParent string) {
 	t.Helper()
-	if _, err := os.Lstat(jailDir); err == nil {
-		t.Errorf("left behind %s; remove it with: sudo rm -rf %s", jailDir, jailDir)
+	if entries, err := os.ReadDir(jailParent); err == nil {
+		for _, e := range entries {
+			path := filepath.Join(jailParent, e.Name())
+			t.Errorf("left behind %s; remove it with: sudo rm -rf %s", path, path)
+		}
+		t.Errorf("left behind %s; remove it with: sudo rmdir %s", jailParent, jailParent)
 	}
-	if _, err := os.Lstat(cgroupDir); err == nil {
-		t.Errorf("left behind %s; remove it with: sudo rmdir %s", cgroupDir, cgroupDir)
+	if entries, err := os.ReadDir(cgroupParent); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue // the cgroup's own control files
+			}
+			path := filepath.Join(cgroupParent, e.Name())
+			t.Errorf("left behind the cgroup %s; remove it with: sudo rmdir %s "+
+				"(if processes are still in it, first: echo 1 | sudo tee %s/cgroup.kill)", path, path, path)
+		}
+		t.Errorf("left behind the cgroup %s; remove it with: sudo rmdir %s", cgroupParent, cgroupParent)
 	}
+}
+
+// cgroupRoot finds the cgroup v2 mount, as the jailer does.
+func cgroupRoot(t *testing.T) string {
+	t.Helper()
+	mounts, err := os.Open("/proc/self/mounts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mounts.Close() //nolint:errcheck // read-only file
+	dir, err := jailer.CgroupRoot(mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// realPath resolves symlinks in path, as the jailer does with its
+// --chroot-base-dir.
+func realPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

@@ -43,7 +43,9 @@ func TestMain(m *testing.M) {
 }
 
 // fakeFirecracker serves the API socket until it is killed. mode is
-// "serve", "load-fails" or "reseed-fails".
+// "serve", "load-fails", "reseed-fails" or "load-fails-undeletable" (the
+// load fails after leaving a folder in the run folder that our user
+// cannot empty, so cleaning up fails too).
 func fakeFirecracker(mode string) {
 	var apiSock string
 	for i := 1; i+1 < len(os.Args); i++ {
@@ -57,7 +59,13 @@ func fakeFirecracker(mode string) {
 		os.Exit(1)
 	}
 	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/snapshot/load" || mode == "load-fails" {
+		if mode == "load-fails-undeletable" {
+			if err := os.Mkdir("locked", 0o700); err == nil {
+				_ = os.WriteFile("locked/stuck", nil, 0o600)
+				_ = os.Chmod("locked", 0o500) //nolint:gosec // G302: a folder whose entries cannot be removed, on purpose
+			}
+		}
+		if r.URL.Path != "/snapshot/load" || mode == "load-fails" || mode == "load-fails-undeletable" {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = io.WriteString(w, `{"fault_message": "fake: no"}`)
 			return
@@ -284,6 +292,33 @@ func TestRestoreFailuresLeaveNothingBehind(t *testing.T) {
 				t.Errorf("runs/ holds %v after a failed restore, want nothing", entries)
 			}
 		})
+	}
+}
+
+func TestRestoreReportsAFailedCleanup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can delete anything, so cleanup cannot fail this way")
+	}
+	store := newStore(t)
+	// Whatever happens, let the test's own cleanup delete the run folder.
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(store.Root().RunsDir(), func(path string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = os.Chmod(path, 0o700) //nolint:gosec // G302: undo the test's 0500
+			}
+			return nil
+		})
+	})
+
+	_, err := restore(t, store, "load-fails-undeletable")
+	if err == nil {
+		t.Fatal("Restore succeeded, want an error")
+	}
+	// Both failures are in the error: the load that went wrong, and the
+	// cleanup that could not delete the run folder.
+	if !strings.Contains(err.Error(), "load snapshot") || !strings.Contains(err.Error(), "destroy") ||
+		!errors.Is(err, os.ErrPermission) {
+		t.Errorf("err = %v; want the load error joined with Destroy's permission error", err)
 	}
 }
 

@@ -138,7 +138,8 @@ type Clone struct {
 
 // Restore makes a new clone of the current snapshot of class from store
 // (see the package comment for the steps). ctx bounds the restore only;
-// the clone runs until Destroy. On error nothing is left behind.
+// the clone runs until Destroy. On error Restore destroys what it made;
+// if that cleanup fails as well, the returned error includes Destroy's.
 func Restore(ctx context.Context, store *snapshot.Store, class string, opts Options) (_ *Clone, err error) {
 	began := time.Now()
 	c := &Clone{mode: Rootless}
@@ -151,10 +152,12 @@ func Restore(ctx context.Context, store *snapshot.Store, class string, opts Opti
 	if c.version, err = store.Current(class); err != nil {
 		return nil, err
 	}
-	// From here on, Destroy cleans up whatever exists so far.
+	// From here on, Destroy cleans up whatever exists so far. If that
+	// fails too, the caller must hear about it: something (a run folder, a
+	// jail, a cgroup) is left on the host.
 	defer func() {
 		if err != nil {
-			_ = c.Destroy()
+			err = errors.Join(err, c.Destroy())
 		}
 	}()
 
