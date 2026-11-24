@@ -277,11 +277,11 @@ func Open(dir string, owner *Owner) (*Log, error) {
 func (l *Log) Append(rec Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.f == nil {
+		return ErrClosed
+	}
 	if l.failed != nil {
 		return fmt.Errorf("%w (first failure: %w)", ErrFailed, l.failed)
-	}
-	if l.f == nil {
-		return errors.New("audit: the log is closed")
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
@@ -315,10 +315,17 @@ func (l *Log) Append(rec Record) error {
 	return nil
 }
 
-// Failed returns the error that stopped the log, or nil.
+// ErrClosed is Append's error after Close.
+var ErrClosed = errors.New("audit: the log is closed")
+
+// Failed returns why the log accepts no more records (a failed write, or
+// Close), or nil while it does.
 func (l *Log) Failed() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.failed == nil && l.f == nil {
+		return ErrClosed
+	}
 	return l.failed
 }
 

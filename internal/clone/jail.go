@@ -152,7 +152,14 @@ func (j *jail) remove() error {
 
 // checkIdentity refuses a jailed UID or GID that the host's user, group
 // or subordinate ID files already use.
-func checkIdentity(uid, gid int) error {
+func checkIdentity(uid, gid int) error { return CheckIdentityRange(uid, gid, 1) }
+
+// CheckIdentityRange refuses n jailed UIDs from uid, and n GIDs from gid,
+// if the host's /etc/passwd, /etc/group, /etc/subuid or /etc/subgid uses
+// any of them (jailer.CheckIdentityRange). sandboxd checks its whole range
+// with it when it starts in jailer mode; Restore checks each clone's ID
+// again.
+func CheckIdentityRange(uid, gid, n int) error {
 	var readers [4]io.Reader
 	for i, name := range []string{"/etc/passwd", "/etc/group", "/etc/subuid", "/etc/subgid"} {
 		f, err := os.Open(name) //nolint:gosec // G304: a fixed list of system files
@@ -165,7 +172,7 @@ func checkIdentity(uid, gid int) error {
 		defer f.Close() //nolint:errcheck // read-only file
 		readers[i] = f
 	}
-	return jailer.CheckIdentity(uid, gid, readers[0], readers[1], readers[2], readers[3])
+	return jailer.CheckIdentityRange(uid, gid, n, readers[0], readers[1], readers[2], readers[3])
 }
 
 // readCgroupRoot finds the cgroup v2 mount, the way the jailer does.

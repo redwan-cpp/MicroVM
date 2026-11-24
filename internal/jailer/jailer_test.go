@@ -177,3 +177,29 @@ func TestCheckIdentity(t *testing.T) {
 		t.Errorf("with no files to read: %v", err)
 	}
 }
+
+func TestCheckIdentityRange(t *testing.T) {
+	users := "root:x:0:0:root:/root:/bin/bash\nodd:x:70031:70031::/:/bin/false\n"
+	group := "root:x:0:\n"
+	check := func(uid, gid, n int, users, subuid string) error {
+		return CheckIdentityRange(uid, gid, n, strings.NewReader(users), strings.NewReader(group),
+			strings.NewReader(subuid), strings.NewReader(""))
+	}
+	// sandboxd's whole range: its last UID is taken.
+	if err := check(DefaultUID, DefaultGID, MaxClones, users, ""); err == nil || !strings.Contains(err.Error(), "70000 to 70031") {
+		t.Errorf("a taken last UID: %v, want an overlap error", err)
+	}
+	if err := check(DefaultUID, DefaultGID, MaxClones-1, users, ""); err != nil {
+		t.Errorf("the range just below it: %v", err)
+	}
+	// A subordinate range that starts inside ours.
+	if err := check(DefaultUID, DefaultGID, MaxClones, "", "someone:70010:100\n"); err == nil || !strings.Contains(err.Error(), "/etc/subuid") {
+		t.Errorf("an overlapping subuid range: %v", err)
+	}
+	if err := check(DefaultUID, DefaultGID, MaxClones, "", "someone:70032:100\nother:69000:1000\n"); err != nil {
+		t.Errorf("ranges just outside ours: %v", err)
+	}
+	if err := check(DefaultUID, DefaultGID, 0, "", ""); err == nil {
+		t.Error("a range of 0 IDs was accepted")
+	}
+}

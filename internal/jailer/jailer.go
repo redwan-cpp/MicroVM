@@ -34,12 +34,17 @@ const ParentCgroup = "microvm"
 // are outside every range something else hands out: systemd's dynamic
 // service users (61184-65519), Debian's on-demand system users
 // (60000-64999) and the subordinate IDs useradd gives each user for user
-// namespaces (from 100000; see /etc/subuid). From week 4, each clone gets
-// its own UID from this one upwards.
+// namespaces (from 100000; see /etc/subuid). sandboxd gives each running
+// clone its own UID and GID from these upwards: DefaultUID + slot, for
+// slots 0 to MaxClones-1.
 const (
 	DefaultUID = 70000
 	DefaultGID = 70000
 )
+
+// MaxClones is the most jailed clones sandboxd runs at once, and so the
+// size of the ID range it uses: 70000 to 70031.
+const MaxClones = 32
 
 // cpuPeriodUs is the cgroup cpu.max period: CPU time is counted per 100 ms.
 const cpuPeriodUs = 100_000
@@ -256,6 +261,16 @@ func unescapeMount(s string) string {
 // sharing its UID with anything else could be signalled, traced or have
 // its files read by it. A nil reader skips that check.
 func CheckIdentity(uid, gid int, passwd, group, subuid, subgid io.Reader) error {
+	return CheckIdentityRange(uid, gid, 1, passwd, group, subuid, subgid)
+}
+
+// CheckIdentityRange is CheckIdentity for n UIDs from uid and n GIDs
+// from gid: none of them may belong to anybody. sandboxd checks its whole
+// range (MaxClones IDs) once when it starts in jailer mode.
+func CheckIdentityRange(uid, gid, n int, passwd, group, subuid, subgid io.Reader) error {
+	if n < 1 {
+		return fmt.Errorf("jailer: a range of %d IDs", n)
+	}
 	for _, c := range []struct {
 		file string
 		r    io.Reader
@@ -270,12 +285,17 @@ func CheckIdentity(uid, gid int, passwd, group, subuid, subgid io.Reader) error 
 		if c.r == nil {
 			continue
 		}
+		last := c.id + n - 1
 		sc := bufio.NewScanner(c.r)
 		for sc.Scan() {
 			fields := strings.Split(strings.TrimSpace(sc.Text()), ":")
-			if lo, hi, ok := c.ids(fields); ok && c.id >= lo && c.id <= hi {
-				return fmt.Errorf("jailer: ID %d is already used by %q in %s; jailed Firecrackers need an ID nobody else has",
-					c.id, fields[0], c.file)
+			if lo, hi, ok := c.ids(fields); ok && lo <= last && hi >= c.id {
+				if n == 1 {
+					return fmt.Errorf("jailer: ID %d is already used by %q in %s; jailed Firecrackers need an ID nobody else has",
+						c.id, fields[0], c.file)
+				}
+				return fmt.Errorf("jailer: IDs %d to %d overlap %q in %s; jailed Firecrackers need IDs nobody else has",
+					c.id, last, fields[0], c.file)
 			}
 		}
 		if err := sc.Err(); err != nil {
