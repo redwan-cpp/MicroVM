@@ -6,6 +6,8 @@
 //	  snapshots/   base snapshots, one versioned folder per size class
 //	  runs/        one private folder per rootless microVM
 //	  jail/        the jailer's --chroot-base-dir (jailer mode)
+//	  audit/       sandboxd's audit log (internal/audit)
+//	  lock         held by the running sandboxd (Root.Lock)
 //
 // Everything is in one place because of hard links. A clone does not copy
 // the snapshot's memory file, it links to it, so that every clone shares
@@ -43,6 +45,8 @@ const (
 	snapshotsName = "snapshots"
 	runsName      = "runs"
 	jailName      = "jail"
+	auditName     = "audit"
+	lockName      = "lock"
 )
 
 // IDLen is the length of every run ID: "r-" and 16 hex digits.
@@ -227,6 +231,9 @@ func (r *Root) RunsDir() string { return filepath.Join(r.dir, runsName) }
 // JailDir is the jailer's --chroot-base-dir. The jailer puts each chroot at
 // <JailDir>/firecracker/<id>/root.
 func (r *Root) JailDir() string { return filepath.Join(r.dir, jailName) }
+
+// AuditDir holds sandboxd's audit log. internal/audit creates it.
+func (r *Root) AuditDir() string { return filepath.Join(r.dir, auditName) }
 
 // NewID returns a fresh random run ID, "r-" and 16 hex digits. The jailer
 // accepts it as a jail ID (letters, digits and "-", at most 64).

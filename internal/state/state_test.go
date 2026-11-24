@@ -226,3 +226,37 @@ func TestDir(t *testing.T) {
 		t.Errorf("Dir = %q with %s set, want /elsewhere", got, EnvVar)
 	}
 }
+
+func TestLockIsExclusive(t *testing.T) {
+	r, err := Open(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := r.Lock()
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	// A second lock (even from this process: flock locks belong to an
+	// open file) fails at once.
+	if _, err := r.Lock(); !errors.Is(err, ErrLocked) {
+		t.Errorf("second Lock = %v, want ErrLocked", err)
+	}
+	if info, err := os.Stat(filepath.Join(r.Dir(), "lock")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("lock file: %v, %v; want mode 0600", info, err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Release(); err != nil {
+		t.Errorf("second Release: %v", err)
+	}
+	l2, err := r.Lock()
+	if err != nil {
+		t.Fatalf("Lock after Release: %v", err)
+	}
+	_ = l2.Release()
+
+	if uid, gid, err := r.Owner(); err != nil || uid != os.Getuid() || gid != os.Getgid() {
+		t.Errorf("Owner = %d:%d, %v; want ours", uid, gid, err)
+	}
+}
