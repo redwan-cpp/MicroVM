@@ -61,13 +61,16 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] Week-2 review follow-ups: CI tools cache keyed on `go.mod` too, exit code (-1..255) and signal (0..64) checks in `agentclient`, Firecracker's log in the run folder under the state folder, a `LockOSThread` warning on `vmm.Start`
 
 ### Week 4: **Demo 1**
-- [ ] `proto/sandbox.proto` + `sandboxd` gRPC server on `/run/sandboxd/sandboxd.sock`
-- [ ] Run state machine with timestamped transitions
-- [ ] `sandboxctl run | ps | logs`
-- [ ] Per-clone sparse scratch disk mounted at `/work`
-- [ ] Destroy and cleanup; audit log v1 (JSONL)
-- [ ] Demo script; tag `v0.1.0`; **freeze the feature list**
-- [ ] Learning doc 11 (the daemon and the life of one run)
+- [x] `proto/sandbox/daemon/v1/sandbox.proto` (Run streams state changes, output and one result; List, Logs, Get) + `sandboxd serve` (`internal/daemon`) on `$XDG_RUNTIME_DIR/sandboxd/sandboxd.sock` rootless, `/run/sandboxd/sandboxd.sock` in jailer mode ([ADR-0006](adr/0006-daemon-socket-and-state-ownership.md)); caller UID from `SO_PEERCRED`; one daemon per state folder (`<state>/lock`); at most `--max-concurrent` clones (default 4, at most 32) and 64 waiting runs; graceful shutdown within 10 s
+- [x] Run state machine with timestamped transitions (`internal/run`): PENDING → RESTORING → MOUNTING → RUNNING → STOPPING → DONE/FAILED; every run ends with STOPPING, its clone destroyed exactly once; outcomes judged by the host only
+- [x] `sandboxctl run | ps | logs | audit verify` (exit codes: the command's own, 124 timeout, 123 output cap, 125 failure)
+- [x] Per-clone sparse scratch disk mounted at `/work`: a formatted ext4 template per class in the store (`make snapshots`, rootless `mkfs.ext4 -d`), copied per clone keeping holes (about 0.3 ms); the agent drops cached placeholder blocks (`BLKFLSBUF`) and mounts it `nodev,nosuid` (MountScratch, additive to agent/v1)
+- [x] Destroy and cleanup; audit log v1 (`internal/audit`): hash-chained JSONL, verified at start, fails closed (a broken chain stops the start, a failed write stops admissions; `sandboxd rotate-audit` is the way out)
+- [x] Firecracker's log bounded: a FIFO drained into a 64 KiB ring buffer (week-3 risk); one jailed UID per clone, 70000 + slot (ADR-0005)
+- [x] Demo script (`make demo1`, `scripts/demo1.sh [--jailer]`) and Demo 1 as a test (`make e2e`; jailer mode in `make e2e-jailer`). On the dev machine, rootless: three clones at once in about 0.65 s wall time, each restore about 18–23 ms, mount about 4 ms, destroy 50–140 ms (Firecracker's own exit, three at once)
+- [ ] **Repeat the root run** before the demo, as the user (it cannot run here): `make e2e-jailer` (now also Demo 1 through a jailer-mode daemon) and `scripts/demo1.sh --jailer`; then tag `v0.1.0` (the user pushes tags)
+- [x] **Freeze the feature list**: new ideas go to "Later" below
+- [x] Learning doc 11 (the daemon and the life of one run)
 
 ### Week 5: policy
 - [ ] Policy schema v1 (YAML, deny by default), validation with clear errors
@@ -117,7 +120,7 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 | KVM missing on the host | **Closed (wk 0):** KVM, nested virtualization and vhost-vsock all work | — |
 | Snapshot restore is slow or fails | **Closed (wk 3):** a restore takes about 15–20 ms, rootless | Report cold-boot numbers only |
 | Snapshot paths collide between clones | **Closed (wk 3):** relative paths in every snapshot, one folder per clone ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) | Restore clones one at a time |
-| Jailer needs root on the demo machine | Open: jailer mode passed one manual root run on the dev machine (2026-11-18, restore 51.4 ms); it is not in CI, so repeat `make e2e-jailer` before Demo 1 | Rootless mode, said out loud ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) |
+| Jailer needs root on the demo machine | Open: jailer mode passed one manual root run on the dev machine (2026-11-18, restore 51.4 ms); it is not in CI. The week-4 jailer code (per-clone UIDs, the log pipe, the scratch copy, the jailer-mode daemon) has **not** had a root run yet: run `make e2e-jailer` and `scripts/demo1.sh --jailer` before Demo 1 | Rootless mode, said out loud: `scripts/demo1.sh` prints "rootless mode (fallback)" ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) |
 | Networking takes too long | — | Keep networking off and say so in the report |
 | Scope creep | Freeze after week 4 | "Later" list |
 | Overclaiming security | [Threat model](threat-model.md), [SECURITY.md](../SECURITY.md) | State that it is not audited |
@@ -129,6 +132,10 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 | 0 | | |
 
 ## Later (after the freeze)
+- Anchor the audit log's newest hash outside the file (for example in a second file root keeps, or a remote log), so removing the newest records or rewriting the whole chain is detected too (threat model T11)
+- Keep `sandboxctl ps` and `logs` history across daemon restarts (today: the last 100 runs, in memory)
+- Shorter clone teardown: Firecracker's own exit takes about 60–100 ms per clone (kernel teardown of guest memory), which is most of a short run's STOPPING
+- A `sandbox` group and the jailer-mode socket set up by an installer or the systemd unit (week 7); today `--socket-group` names one
 - Rootless hardening: Landlock and a user namespace around Firecracker, so rootless mode gets some of jailer mode's confinement
 - Jailer `--new-pid-ns`, with pidfd-based process handling (the jailer forks, so the PID changes)
 - Lazy memory loading with userfaultfd (UFFD) for faster restores

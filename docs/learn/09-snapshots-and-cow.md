@@ -22,12 +22,12 @@ There is one catch: every loaded copy also wakes up with the **same clock** and 
 | `vm.snap` | The CPU registers, the state of every virtual device, and the **device configuration**, including every path we gave Firecracker | about 14 KiB |
 | `mem.snap` | All of guest memory, byte for byte: the kernel, the init script, the running agent | 256 MiB |
 
-The root disk is not in the snapshot; it is a separate file. So the store keeps its **own** hard link to the disk the snapshot was built from (next section), and a `manifest.json` with the SHA-256 of every file, the Firecracker version and the kernel's hash.
+The root disk is not in the snapshot; it is a separate file. So the store keeps its **own** hard link to the disk the snapshot was built from (next section), a formatted, empty scratch disk (`scratch.ext4`) that every clone gets its own copy of (doc 11), and a `manifest.json` with the SHA-256 of every file, the Firecracker version and the kernel's hash.
 
 ```
 guest/out/state/snapshots/small/
-  20261118T171150Z-8ab632/   vm.snap  mem.snap  rootfs.ext4  manifest.json   (all mode 0444)
-  current -> 20261118T171150Z-8ab632
+  20261124T140456Z-32abab/   vm.snap  mem.snap  rootfs.ext4  scratch.ext4  manifest.json   (all mode 0444)
+  current -> 20261124T140456Z-32abab
 ```
 
 A snapshot only loads in the **Firecracker version that made it**, so opening the store refuses a mismatch with "run make snapshots". The hashes are checked once, when the store is opened, never during a restore.
@@ -94,6 +94,7 @@ make e2e 2>&1 | grep -E 'cold boot|restore [0-9]'
 | Size classes, build, store, manifest | `internal/snapshot` |
 | One state folder, one filesystem | `internal/state` |
 | Restore, timings, de-twin, destroy | `internal/clone` |
+| The scratch disk template, copied per clone | `internal/snapshot` (`scratch.go`) |
 | The snapshot API calls | `internal/vmm` (`Pause`, `CreateSnapshot`, `LoadSnapshot`) |
 | The facts we rely on, checked on a real VM | `test/e2e/spike_test.go`, `test/e2e/restore_test.go` |
 

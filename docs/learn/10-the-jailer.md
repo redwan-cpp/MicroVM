@@ -46,7 +46,7 @@ The store's files are shared by every clone. If one jailed Firecracker could wri
 - store files stay owned by **you** (who ran `make snapshots`) and are mode **0444**: UID 70000 may read them, never write or `chmod` them;
 - only the clone's own files, the scratch disk and the log, belong to UID 70000.
 
-UID 70000 is chosen so that **nobody else has it**: no user, no group, outside systemd's range for temporary service users (61184–65519), Debian's on-demand system users (60000–64999) and the subordinate IDs that rootless containers use (from 100000, see `/etc/subuid`). The code checks those files and refuses an ID that is taken. From week 4 each clone gets its own UID.
+UID 70000 is chosen so that **nobody else has it**: no user, no group, outside systemd's range for temporary service users (61184–65519), Debian's on-demand system users (60000–64999) and the subordinate IDs that rootless containers use (from 100000, see `/etc/subuid`). The code checks those files and refuses an ID that is taken. Since week 4 each running clone gets a UID of its own, 70000 to 70031 (one per daemon slot), so two jailed clones cannot signal each other; `sandboxd` checks the whole range when it starts, and a UID whose clone could not be cleaned up is not used again until the daemon restarts.
 
 ## 5. cgroups: the electricity timer
 
@@ -78,7 +78,7 @@ sudo bin/e2e-jailer.test -test.run Jailer -test.v                  # as root, th
 
 (`make e2e-jailer` does exactly these three.) As root, the test creates only the jail folder and the cgroup, and removes both. If a cleanup fails, it prints the `sudo rm -rf …` / `sudo rmdir …` to finish by hand.
 
-One more thing left for week 4: Firecracker's own log file grows without a limit. `sandboxd` will read it through a pipe into a fixed-size ring buffer, like the guest console.
+Firecracker's own log is not a file either (since week 4): it is a named pipe in the chroot, given to the jailed user, which the host reads into a 64 KiB ring buffer like the guest console, so it can never fill the disk.
 
 ## 8. Try it
 
@@ -95,7 +95,7 @@ cat /sys/fs/cgroup/cgroup.controllers
 ```bash
 make e2e-jailer
 ```
-👀 Asks for your sudo password once, restores one clone in jailer mode, and shows its UID (70000), its cgroup limits and its timings. (Needs KVM and sudo.)
+👀 Asks for your sudo password once, restores one clone in jailer mode and shows its UID (70000), its cgroup limits and its timings; then runs Demo 1 through a jailer-mode daemon: three clones at once, as three different UIDs. (Needs KVM and sudo.)
 
 ## 9. In our project
 
@@ -131,6 +131,7 @@ The kernel clears the parent-death signal when a process changes its user, which
 | Jailer | Firecracker's helper that locks Firecracker in before the VM runs |
 | chroot / pivot_root | Make a folder the process's "/", so it cannot see the rest |
 | UID drop | Switch from root to an unprivileged user ID |
+| FIFO | A named pipe: a file name that one process writes into and another reads from |
 | cgroup | A group of processes the kernel limits and can kill together |
 | nodev | A mount option that forbids using device files on that filesystem |
 | PID namespace | A separate process-ID world: processes inside see only each other |

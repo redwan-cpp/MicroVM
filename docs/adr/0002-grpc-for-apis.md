@@ -1,6 +1,6 @@
 # ADR-0002: gRPC for the CLI↔daemon and daemon↔agent APIs
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by [ADR-0006](0006-daemon-socket-and-state-ownership.md) (2026-11-24): the socket is `$XDG_RUNTIME_DIR/sandboxd/sandboxd.sock` in rootless mode, `/run/sandboxd/sandboxd.sock` in jailer mode
 - **Date:** 2026-11-04
 
 ## Context
@@ -16,7 +16,7 @@ Both need **streaming**: the user should see stdout and stderr while the command
 Use **gRPC with Protocol Buffers** for both APIs. The `.proto` files live in `proto/` and are generated with `buf`. `Exec` is a server-streaming RPC: it sends output chunks, then a final message with the exit status.
 
 The transport is a plain `net.Conn` in both cases:
-- CLI→daemon: `unix:///run/sandboxd/sandboxd.sock`. Access is controlled by file permissions (group `sandbox`).
+- CLI→daemon: `unix:///run/sandboxd/sandboxd.sock`. Access is controlled by file permissions (group `sandbox`). *(Amended by ADR-0006: in rootless mode the socket is the user's own, under `$XDG_RUNTIME_DIR`.)* The API is `proto/sandbox/daemon/v1/sandbox.proto`.
 - Daemon→agent: a custom dialer in `internal/vsockconn` that does the Firecracker `CONNECT` handshake, then gives the connection to gRPC.
 
 ## Consequences

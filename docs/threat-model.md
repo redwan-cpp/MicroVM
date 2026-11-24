@@ -1,4 +1,4 @@
-# Threat model (v0, 2026-11-04; updated 2026-11-18 for the two modes of ADR-0005)
+# Threat model (v0, 2026-11-04; updated 2026-11-18 for the two modes of ADR-0005, and 2026-11-24 for the daemon)
 
 > **Status: draft.** v1 is due in week 9, together with the escape suite. This system has **not been security audited**. It is a research and teaching project, not a production multi-tenant service.
 
@@ -16,7 +16,7 @@
 
 **The attacker fully controls the code inside the guest**, including root inside the VM. The command is untrusted. It may be malicious or AI-generated, and it may be deliberately hostile to the guest agent, for example killing it or flooding its output.
 
-**Trusted:** the host kernel, KVM, the user running `sandboxctl` (a member of group `sandbox`), and `sandboxd`.
+**Trusted:** the host kernel, KVM, the user running `sandboxctl` (in jailer mode a member of group `sandbox`; in rootless mode the daemon's own user), and `sandboxd`.
 
 ## Trust boundaries
 
@@ -29,24 +29,24 @@
 1. **Guest → VMM.** Hardware virtualization (KVM) and Firecracker's small device model: virtio-block, virtio-net, virtio-vsock, serial. This is the main isolation boundary. Its strength comes from KVM and Firecracker, which we do not modify.
 2. **VMM → host.** If boundary 1 fails, the attacker lands inside a Firecracker process. In **jailer mode** the jailer limits it: own chroot, non-root UID, own mount namespace (PID and network namespaces follow in later weeks), cgroup limits, and Firecracker's built-in seccomp filters. In **rootless mode** only the seccomp filters remain (see below).
 3. **Agent → daemon.** The daemon treats **everything the agent sends as untrusted input**. It caps output size, enforces deadlines, and never runs anything the agent asks for.
-4. **CLI → daemon.** Access to the Unix socket is controlled by file permissions. Policies are validated, and invalid or unknown fields are rejected (deny by default).
+4. **CLI → daemon.** Access to the Unix socket is controlled by file permissions ([ADR-0006](adr/0006-daemon-socket-and-state-ownership.md)): only the user in rootless mode, root and the group `sandbox` in jailer mode. The daemon takes the caller's UID from the kernel (`SO_PEERCRED`), never from the request, and records it. Requests are validated before any clone exists, and unknown fields are rejected (deny by default); from week 5 the same goes for policies.
 
 ## Threats and planned mitigations
 
 | # | Threat | Mitigation | Escape test (wk 9) |
 |---|--------|------------|--------------------|
 | T1 | Read or write host files | No host directories are shared into the guest. Rootfs is read-only; the scratch disk is a fresh per-run file | Filesystem |
-| T2 | Data left behind between runs | A new clone and a new scratch disk every run; both destroyed afterwards | Filesystem |
-| T3 | Cross-clone data leak | Separate scratch files. Memory pages are shared only read-only, and copy-on-write gives each clone private copies of pages it writes | Cross-clone |
+| T2 | Data left behind between runs | A new clone and a new scratch disk every run; both destroyed afterwards. Each clone's `/work` is its own copy of the store's formatted, empty template, never a link to it; the guest drops its cached blocks of the snapshot's placeholder disk before mounting it (week 4, three-clone e2e test) | Filesystem |
+| T3 | Cross-clone data leak | Separate scratch files (a private copy each). Memory pages are shared only read-only, and copy-on-write gives each clone private copies of pages it writes. In jailer mode each running clone has its own UID (70000 + slot), so jailed clones cannot signal each other | Cross-clone |
 | T4 | Network access when it is off | Clone in its own netns with no route, plus an nftables drop | Network (off) |
 | T5 | Reaching non-allowlisted hosts | Egress-only allowlist of IPs pinned at run start, so DNS rebinding can't widen it | Network (allowlist) |
-| T6 | Resource exhaustion (fork bomb, memory hog, disk fill, CPU spin) | Size class + cgroup v2 `cpu.max`/`memory.max`/`pids.max`, fixed scratch size, wall-clock timeout, output cap | Resources |
+| T6 | Resource exhaustion (fork bomb, memory hog, disk fill, CPU spin) | Size class + cgroup v2 `cpu.max`/`memory.max`/`pids.max`, fixed scratch size, wall-clock timeout, output cap. On the host (week 4): Firecracker's log is a pipe drained into a 64 KiB ring, never a growing file; the daemon runs at most `--max-concurrent` clones, lets at most 64 runs wait, accepts requests up to 1 MiB (stdin up to 960 KiB) and keeps at most 1 MiB of output per run and 64 MiB in all, oldest dropped first | Resources |
 | T7 | Hostile agent behavior (killing it, flooding it, malformed messages) | Deadlines on every call, output caps, the run ends and the VM is destroyed if the agent disappears | Host interface |
 | T8 | Guest-initiated vsock connections to the host | No host listeners on the vsock socket path; connection attempts fail | Host interface |
 | T9 | VMM escape, then host takeover | **Jailer mode only:** chroot, UID drop, namespaces, seccomp, cgroups. Rootless mode has seccomp alone (see "The two modes") | Process confinement (counted in jailer mode only) |
 | T10 | Predictable randomness in clones (same RNG state) | Agent reseeds the RNG on every restore, and the restore fails if it cannot. VMGenID works too with Firecracker v1.17 and kernel 6.1.155: the guest kernel reseeds itself on restore (week-3 spike) | Cross-clone |
-| T11 | Tampering with the audit log | Append-only JSONL with a hash chain: each record includes the SHA-256 of the previous one | Audit check |
-| T12 | Leftover resources after a crash (taps, cgroups, rules, chroots) | Cleanup is idempotent; in jailer mode it kills the clone's whole cgroup (`cgroup.kill`), since the parent-death signal does not survive the jailer's change of user. Reconciler runs on daemon start (week 7) | Reconciler test |
+| T11 | Tampering with the audit log | **Mitigated (v1, week 4):** append-only JSONL (`<state>/audit/audit.jsonl`, 0600, fsync per record) with a hash chain: each line's hash is the SHA-256 of the previous hash and the record's exact bytes. `sandboxctl audit verify` detects edits, removals and reordering **inside** the chain and names the first broken line. It does **not** detect removal of the newest records, or a full rewrite by whoever can write the file (the user in rootless mode, root in jailer mode); anchoring the newest hash elsewhere is on the "Later" list. The log fails closed: a broken chain stops the daemon from starting, and a failed write stops it from accepting runs. Records hold the command, never env values or stdin | Audit check |
+| T12 | Leftover resources after a crash (taps, cgroups, rules, chroots) | Cleanup is idempotent; in jailer mode it kills the clone's whole cgroup (`cgroup.kill`), since the parent-death signal does not survive the jailer's change of user. Every run, whatever happens, ends with its clone destroyed (week 4); a clone that could not be cleaned up retires its slot (and UID) until the daemon restarts. If the daemon itself crashes, rootless clones die with it (parent-death signal), jailed ones may leave a chroot and a cgroup: the reconciler runs on daemon start (week 7) | Reconciler test |
 
 ## The two modes (ADR-0005)
 

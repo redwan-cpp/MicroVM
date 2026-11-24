@@ -26,7 +26,7 @@ The week-3 spike ([`test/e2e/spike_test.go`](../../test/e2e/spike_test.go)) chec
 2. **One state folder on one filesystem.** `snapshots/`, `runs/` and `jail/` live under one folder (`MICROVM_STATE_DIR`, default `guest/out/state`), checked once to be on one filesystem, because hard links cannot cross filesystems.
 3. **The VMM cannot change shared files.** Store files (`vm.snap`, `mem.snap`, `rootfs.ext4`) are mode 0444 and keep the owner who built them. In jailer mode they are hard-linked into the chroot unchanged; only the clone's own files (scratch disk, log) belong to the jailed user.
 4. **No `--new-pid-ns` yet.** With it, the jailer forks and our process would lose Firecracker's PID. Without it, the jailer execs Firecracker in place. The jailer's change of user clears the parent-death signal, so jailer mode cleans up through the clone's cgroup (`cgroup.kill`), not `Pdeathsig`.
-5. **The mode is always reported.** Every result that carries timings carries the mode (`rootless` or `jailer`), so rootless numbers are never shown as jailed ones. From week 4 the audit record of each run carries it too.
+5. **The mode is always reported.** Every result that carries timings carries the mode (`rootless` or `jailer`), so rootless numbers are never shown as jailed ones. Since week 4 the daemon's results, `sandboxctl ps` and every audit record carry it too.
 6. **Demo 1 (week 4) runs in jailer mode** on the presenter's machine, with a rootless fallback that is said out loud if the jailer cannot be used there.
 7. **The escape suite (week 9) counts T9 results in jailer mode only** ([threat model](../threat-model.md)). A rootless run of a T9 test is reported, never counted as a pass.
 
@@ -40,7 +40,7 @@ The week-3 spike ([`test/e2e/spike_test.go`](../../test/e2e/spike_test.go)) chec
 **Bad:**
 - **Rootless mode is weaker.** If code escapes the VM into Firecracker (T9), it runs as our user: it can read our home folder (T1), the base snapshots and the other clones' files (T3). Firecracker's own seccomp filters still apply, but there is no chroot, UID drop, namespace or cgroup around it. The threat model says so.
 - The jailer test needs a person with sudo; it cannot run in CI.
-- One fixed jailed UID for now: two jailed clones could signal each other. From week 4 each clone gets its own UID.
+- ~~One fixed jailed UID for now: two jailed clones could signal each other.~~ Since week 4 each running clone gets its own UID and GID (70000 + its daemon slot, up to 70031), and a slot whose clone could not be cleaned up is retired until the daemon restarts.
 
 **Alternatives rejected:**
 - *v1.17's `vsock_override` on LoadSnapshot and `PATCH /drives` after load:* they give each clone different **absolute** paths. Those paths would have to differ between rootless runs and the chroot, so a snapshot (or each restore) would depend on the mode, and they add API calls to every restore.

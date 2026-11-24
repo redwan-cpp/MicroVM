@@ -93,7 +93,7 @@ That is **best effort**: a process can leave its group (`setsid`). The agent the
 ```bash
 grep -n "rpc " proto/sandbox/agent/v1/agent.proto
 ```
-👀 The four calls the agent offers: Health, Exec, SyncTime and Reseed.
+👀 The calls the agent offers: Health, Exec, SyncTime, Reseed, and (from week 4) MountScratch, which mounts the clone's own disk at `/work`.
 
 ```bash
 scripts/boot-vm.sh -q -- 'ls -l /dev/vsock /usr/local/bin/sandbox-agent'
@@ -116,7 +116,7 @@ make e2e
 | Start and stop Firecracker (host) | `internal/vmm` |
 | The whole path, on a real VM | `test/e2e` |
 
-Later, `sandboxd` (week 4) uses exactly these pieces for every run.
+`sandboxd` (week 4, doc 11) uses exactly these pieces for every run.
 
 ## 10. Check yourself
 

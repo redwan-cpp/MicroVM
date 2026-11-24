@@ -28,6 +28,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Jailer mode (`internal/jailer`, `clone.Options.Jailer`): chroot per clone, UID drop to 70000, cgroup v2 `cpu.max`/`memory.max`/`pids.max` per size class, read-only hard-linked snapshot files, `cgroup.kill` cleanup. `make e2e-jailer` builds the test as you and runs only that binary with sudo. Verified by one manual root run on the dev machine on 2026-11-18 (all checks passed; restore 51.4 ms in jailer mode against about 15–20 ms rootless); the root run is manual, not in CI.
 - `make e2e` restores real clones from a snapshot it builds; `make breaking` (part of `make lint` and CI) runs `buf breaking` against `origin/main`.
 - ADR-0005 (rootless mode and jailer mode, one snapshot for both; amends ADR-0003); learning docs 09 (snapshots and copy-on-write) and 10 (the jailer).
+- **Demo 1 (week 4).** The daemon API, `proto/sandbox/daemon/v1/sandbox.proto` (Run streams state changes, stdout/stderr and one result; List, Logs, Get), and `sandboxd serve` (`internal/daemon`): one run per request in a fresh clone, at most `--max-concurrent` at once (default 4, at most 32) and 64 waiting, the caller's UID from `SO_PEERCRED`, graceful shutdown within 10 s.
+- The run state machine (`internal/run`): PENDING → RESTORING → MOUNTING → RUNNING → STOPPING → DONE/FAILED, timestamped; every run ends with its clone destroyed exactly once and its audit record written; outcomes (EXITED, TIMED_OUT, OUTPUT_TRUNCATED, FAILED) judged by the host only.
+- `sandboxctl run | ps | logs | audit verify`; `run` exits with the command's code, 124 on timeout, 123 at the output cap, 125 on failure.
+- A scratch disk per clone at `/work`: a formatted ext4 template per class in the snapshot store, copied per clone (keeping holes, about 0.3 ms), mounted `nodev,nosuid` by the agent's new MountScratch call after it drops cached placeholder blocks (`BLKFLSBUF`).
+- The audit log v1 (`internal/audit`): hash-chained JSONL in `<state>/audit/`, verified when the daemon starts, failing closed; `sandboxd rotate-audit` moves a broken log aside and starts a new chain.
+- ADR-0006 (daemon socket and state ownership; amends ADR-0002); learning doc 11 (the daemon and the life of one run); `make demo1` (`scripts/demo1.sh`, `--jailer` for jailer mode); Demo 1 as an e2e test, rootless (`make e2e`) and in jailer mode (`make e2e-jailer`).
 
 ### Changed
 - The guest root disk (64 MiB) now contains `sandbox-agent`; `make guest` builds it first. The init script starts the agent when the kernel command line says `sandbox_mode=agent`.
@@ -38,3 +44,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - CI's tools cache is keyed on `go.mod` as well as the Makefile.
 - A failed restore reports a failed cleanup too; the jailer test cleans up and lists leftovers even when the restore itself fails, and checks that Firecracker keeps no supplementary groups.
 - Jailer mode refuses a `noexec` state folder, checks chroot socket paths with the real Firecracker binary name, and refuses files named like those the jailer creates in the chroot.
+- Week 4: Firecracker's log is a named pipe drained into a 64 KiB ring buffer instead of a file that could grow without a limit. In jailer mode every running clone has its own UID and GID (70000 + slot), the whole range checked unused at daemon start, and a slot whose clone could not be cleaned up is retired until restart.
+- The snapshot manifest is format 2 (the scratch template); a week-3 store asks for `make snapshots`. e2fsprogs 1.47 or newer is needed.
+- `sandboxd build-snapshots` (and its new `--state-dir` name for `--state`) prunes old versions only while it can take the state folder's lock, so it never prunes under a running daemon and never waits or fails because one runs.
+- The agent's stdin ceiling is 1 MiB − 64 KiB (960 KiB), so a request with the largest stdin fits in the 1 MiB message limit; the daemon checks the same rules (`agent.CheckExecRequest`) before it restores a clone.
+- Threat model: T11 mitigated (v1), with what the chain does and does not detect; T2, T3, T6 and T12 updated for the daemon.
