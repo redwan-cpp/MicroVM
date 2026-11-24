@@ -3,6 +3,7 @@ package vmm
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"golang.org/x/sys/unix"
 )
 
 // The names of Firecracker's own files in its run folder. Firecracker runs
@@ -25,13 +28,19 @@ const (
 	APISocketName = "api.sock"
 	// VsockName is the conventional vsock Unix socket name (Vsock.UDSPath).
 	VsockName = "v.sock"
-	// LogName is Firecracker's own log file.
+	// LogName is Firecracker's own log. It is a named pipe (FIFO), not a
+	// file: see Start.
 	LogName = "firecracker.log"
 )
 
 const (
 	// consoleSize is how much of the guest's serial console we keep.
 	consoleSize = 64 << 10
+	// logSize is how much of Firecracker's own log we keep.
+	logSize = 64 << 10
+	// logDrainWait is how long Stop waits for the last log lines after
+	// Firecracker has exited.
+	logDrainWait = time.Second
 	// socketWait is how long Start waits for Firecracker's API socket.
 	socketWait = 2 * time.Second
 	// stopGrace is how long Stop waits after SIGTERM before SIGKILL.
@@ -59,8 +68,8 @@ type Config struct {
 	// stdout and stderr) with RunDir as Firecracker's working directory;
 	// the jailer does, since RunDir is its chroot.
 	Launcher *Launcher
-	// LogOwner, if set, becomes the owner of the log file Start creates,
-	// so a Firecracker running as that (jailed) user can write it.
+	// LogOwner, if set, becomes the owner of the log pipe Start creates,
+	// so a Firecracker running as that (jailed) user can write to it.
 	LogOwner *Owner
 }
 
@@ -85,8 +94,14 @@ type Process struct {
 	cmd     *exec.Cmd
 	dir     string
 	console *RingBuffer
+	log     *RingBuffer
 	client  *Client
 	exited  chan struct{} // closed when the process has exited
+
+	// The two ends of the log pipe that we hold (see openLog), and a
+	// channel closed when everything written to it has been read.
+	logR, logW *os.File
+	logDone    chan struct{}
 
 	stopGrace time.Duration // stopGrace, shorter in tests
 	stopOnce  sync.Once
@@ -115,6 +130,7 @@ func Start(ctx context.Context, cfg Config) (*Process, error) {
 	p := &Process{
 		dir:       dir,
 		console:   NewRingBuffer(consoleSize),
+		log:       NewRingBuffer(logSize),
 		client:    NewClient(filepath.Join(dir, APISocketName)),
 		exited:    make(chan struct{}),
 		stopGrace: stopGrace,
@@ -131,18 +147,8 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("vmm: run folder path %s is too long for Unix sockets; use a shorter state folder", p.dir)
 	}
 
-	// Firecracker wants its log file to exist already.
-	logFile, err := os.OpenFile(p.LogPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("vmm: create log file: %w", err)
-	}
-	if err := logFile.Close(); err != nil {
-		return fmt.Errorf("vmm: create log file: %w", err)
-	}
-	if o := cfg.LogOwner; o != nil {
-		if err := os.Lchown(p.LogPath(), o.UID, o.GID); err != nil {
-			return fmt.Errorf("vmm: give the log file to %d:%d: %w", o.UID, o.GID, err)
-		}
+	if err := p.openLog(cfg.LogOwner); err != nil {
+		return err
 	}
 
 	// Relative names only: Firecracker resolves them against its working
@@ -159,7 +165,7 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 	}
 	// os/exec would resolve a relative program path against cmd.Dir, the
 	// run folder, so make it absolute first.
-	program, err = filepath.Abs(program)
+	program, err := filepath.Abs(program)
 	if err != nil {
 		return fmt.Errorf("vmm: %w", err)
 	}
@@ -191,10 +197,52 @@ func (p *Process) start(ctx context.Context, cfg Config) error {
 	p.cmd = cmd
 	go func() {
 		_ = cmd.Wait() // the exit status of a VM process tells us nothing useful
+		// Firecracker's own end of the log pipe is closed now. Closing ours
+		// too lets the reader see the end, once it has read everything.
+		_ = p.logW.Close()
 		close(p.exited)
 	}()
 
 	return p.waitForSocket(ctx)
+}
+
+// openLog makes Firecracker's log a named pipe (FIFO) in the run folder
+// and starts copying everything written to it into a 64 KiB ring buffer,
+// like the console. A plain log file would grow without a limit, and the
+// guest can make Firecracker log (threat T6); a pipe holds at most 64 KiB
+// that nobody has read, and the ring keeps only the newest 64 KiB of what
+// was read. Firecracker opens the pipe read-write and non-blocking, so it
+// never waits for us: if we ever fell behind, it would drop log lines,
+// never stall the VM.
+//
+// The order matters. We open our read end first, non-blocking, because a
+// blocking open of a FIFO waits until someone opens the other end. Then
+// we open a write end and keep it until Firecracker has exited: a reader
+// sees "end of file" as soon as no writer is left, and without our write
+// end that would happen before Firecracker has even started.
+func (p *Process) openLog(owner *Owner) error {
+	path := p.LogPath()
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		return fmt.Errorf("vmm: create the log pipe: %w", err)
+	}
+	if owner != nil {
+		if err := os.Lchown(path, owner.UID, owner.GID); err != nil {
+			return fmt.Errorf("vmm: give the log pipe to %d:%d: %w", owner.UID, owner.GID, err)
+		}
+	}
+	var err error
+	if p.logR, err = os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0); err != nil { //nolint:gosec // G304: our own run folder
+		return fmt.Errorf("vmm: open the log pipe: %w", err)
+	}
+	if p.logW, err = os.OpenFile(path, os.O_WRONLY, 0); err != nil { //nolint:gosec // G304: our own run folder
+		return fmt.Errorf("vmm: open the log pipe: %w", err)
+	}
+	p.logDone = make(chan struct{})
+	go func() {
+		defer close(p.logDone)
+		_, _ = io.Copy(p.log, p.logR) // ends when no writer is left, or when Stop closes logR
+	}()
+	return nil
 }
 
 // waitForSocket waits until the API socket accepts connections.
@@ -224,7 +272,7 @@ func (p *Process) waitForSocket(ctx context.Context) error {
 }
 
 // Stop ends Firecracker (SIGTERM, then SIGKILL after 2 s), waits for it to
-// exit and deletes the run folder. The VM and everything in it are gone
+// exit, closes its log pipe and deletes the run folder. The VM and everything in it are gone
 // afterwards. Stop may be called any number of times.
 func (p *Process) Stop() error {
 	p.stopOnce.Do(func() { p.stopErr = p.stop() })
@@ -244,11 +292,33 @@ func (p *Process) stop() error {
 				<-p.exited
 			}
 		}
+	} else if p.logW != nil {
+		_ = p.logW.Close() // Firecracker never started
 	}
+	p.closeLog()
 	if err := os.RemoveAll(p.dir); err != nil {
 		return fmt.Errorf("vmm: delete run folder: %w", err)
 	}
 	return nil
+}
+
+// closeLog waits briefly for the log reader to read what Firecracker
+// wrote last, then closes the read end (which also stops a reader that is
+// still waiting).
+func (p *Process) closeLog() {
+	if p.logR == nil {
+		return
+	}
+	if p.logDone != nil {
+		select {
+		case <-p.logDone:
+		case <-time.After(logDrainWait):
+		}
+	}
+	_ = p.logR.Close()
+	if p.logDone != nil {
+		<-p.logDone
+	}
 }
 
 // Client returns the API client for this Firecracker.
@@ -272,8 +342,16 @@ func (p *Process) APISocketPath() string { return filepath.Join(p.dir, APISocket
 // it. Dial the agent here (agentclient.Dial).
 func (p *Process) VsockPath() string { return filepath.Join(p.dir, VsockName) }
 
-// LogPath is the host path of Firecracker's own log file.
+// LogPath is the host path of Firecracker's own log pipe.
 func (p *Process) LogPath() string { return filepath.Join(p.dir, LogName) }
+
+// Log returns the last 64 KiB of Firecracker's own log. It can quote what
+// the guest did, so clean it before showing it (LogTail does).
+func (p *Process) Log() []byte { return p.log.Bytes() }
+
+// LogTail returns the last n bytes (at most) of Firecracker's log, with
+// control characters other than newline and tab removed.
+func (p *Process) LogTail(n int) string { return CleanConsole(p.log.Bytes(), n) }
 
 // Console returns the last 64 KiB of the guest's serial console. The guest
 // wrote it, so it may hold anything, including terminal escape sequences:

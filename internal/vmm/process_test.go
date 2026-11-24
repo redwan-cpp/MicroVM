@@ -31,14 +31,16 @@ func TestMain(m *testing.M) {
 	case "version":
 		fmt.Print("Firecracker v1.17.0\n\n2026-11-18T00:00:00 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0\n")
 	default:
-		fakeFirecracker(mode == "ignore-sigterm")
+		fakeFirecracker(mode)
 	}
 }
 
-// fakeFirecracker parses the same flags as Firecracker, prints a line on
-// stdout and stderr (the "console"), and serves the API socket until it is
-// killed.
-func fakeFirecracker(ignoreSIGTERM bool) {
+// fakeFirecracker parses the same flags as Firecracker, opens its log the
+// way Firecracker v1.17 does (read-write, non-blocking) and writes a line
+// to it, prints a line on stdout and stderr (the "console"), and serves
+// the API socket until it is killed. In mode "log-flood" it first writes
+// 1 MiB to the log without waiting for anyone to read it.
+func fakeFirecracker(mode string) {
 	var apiSock, logPath string
 	for i := 1; i+1 < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -48,11 +50,24 @@ func fakeFirecracker(ignoreSIGTERM bool) {
 			logPath = os.Args[i+1]
 		}
 	}
-	if _, err := os.Stat(logPath); err != nil { //nolint:gosec // G703: the path comes from the test itself; Firecracker needs the log file to exist
-		fmt.Fprintln(os.Stderr, "fake firecracker: no log file:", err)
+	logFile, err := os.OpenFile(logPath, os.O_RDWR|syscall.O_NONBLOCK, 0) //nolint:gosec // G304: the path comes from the test itself
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake firecracker: no log:", err)
 		os.Exit(1)
 	}
-	if ignoreSIGTERM {
+	if mode == "log-flood" {
+		line := []byte(strings.Repeat("x", 1023) + "\n")
+		for range 1024 {
+			_, _ = logFile.Write(line) // a full pipe says EAGAIN: the line is dropped, as in Firecracker
+		}
+	}
+	for { // the last line must arrive: retry while the pipe is full
+		if _, err := logFile.WriteString("fake log: running\n"); !errors.Is(err, syscall.EAGAIN) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if mode == "ignore-sigterm" {
 		signal.Ignore(syscall.SIGTERM)
 	}
 	lis, err := net.Listen("unix", apiSock)
@@ -113,8 +128,12 @@ func TestProcessStartAndStop(t *testing.T) {
 	if filepath.Dir(p.VsockPath()) != p.Dir() {
 		t.Errorf("VsockPath %s is not in the run folder", p.VsockPath())
 	}
-	if info, err := os.Stat(p.LogPath()); err != nil || info.Mode().Perm() != 0o600 {
-		t.Errorf("log file: %v, %v; want mode 0600", info, err)
+	if info, err := os.Stat(p.LogPath()); err != nil || info.Mode().Perm() != 0o600 || info.Mode().Type() != os.ModeNamedPipe {
+		t.Errorf("log: %v, %v; want a named pipe, mode 0600", info, err)
+	}
+	waitFor(t, "the log line", func() bool { return bytes.Contains(p.Log(), []byte("fake log: running\n")) })
+	if p.LogTail(100) != "fake log: running\n" {
+		t.Errorf("LogTail = %q", p.LogTail(100))
 	}
 	if err := p.Client().Start(t.Context()); err != nil {
 		t.Errorf("API call to the fake: %v", err)
@@ -137,6 +156,27 @@ func TestProcessStartAndStop(t *testing.T) {
 		t.Errorf("second Stop: %v, want nil", err)
 	}
 	assertGone(t, p, pid)
+}
+
+func TestProcessLogIsBounded(t *testing.T) {
+	p, _, err := startFake(t, "log-flood")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The fake wrote 1 MiB without waiting; it got through to serving its
+	// API socket (Start returned), and we keep only the newest 64 KiB.
+	waitFor(t, "the last log line", func() bool { return bytes.HasSuffix(p.Log(), []byte("fake log: running\n")) })
+	if n := len(p.Log()); n > logSize {
+		t.Errorf("kept %d bytes of log, want at most %d", n, logSize)
+	}
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-p.logDone:
+	default:
+		t.Error("the log reader still runs after Stop")
+	}
 }
 
 func TestProcessStopEscalatesToSIGKILL(t *testing.T) {
@@ -196,7 +236,7 @@ func TestProcessStartsThroughALauncher(t *testing.T) {
 	})
 	var st syscall.Stat_t
 	if err := syscall.Stat(p.LogPath(), &st); err != nil || int(st.Uid) != self.UID || int(st.Gid) != self.GID {
-		t.Errorf("log file owner %d:%d (%v), want %d:%d", st.Uid, st.Gid, err, self.UID, self.GID)
+		t.Errorf("log pipe owner %d:%d (%v), want %d:%d", st.Uid, st.Gid, err, self.UID, self.GID)
 	}
 }
 

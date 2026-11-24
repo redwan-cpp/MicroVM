@@ -280,9 +280,11 @@ func deTwin(ctx context.Context, agent *agentclient.Client) error {
 	return agent.Reseed(ctx, entropy)
 }
 
-// withConsole adds the end of the guest console to err.
+// withConsole adds the end of the guest console and of Firecracker's own
+// log to err.
 func (c *Clone) withConsole(err error) error {
-	return fmt.Errorf("%w\nguest console (end):\n%s", err, c.proc.ConsoleTail(consoleTail))
+	return fmt.Errorf("%w\nguest console (end):\n%s\nfirecracker log (end):\n%s",
+		err, c.proc.ConsoleTail(consoleTail), c.proc.LogTail(consoleTail))
 }
 
 // ID is the clone's run ID (state.NewID), also the name of its folder
@@ -341,6 +343,10 @@ func (c *Clone) MountScratch(ctx context.Context) error {
 	}
 	return nil
 }
+
+// LogTail returns the end of Firecracker's own log, safe to print. It is
+// kept in a 64 KiB ring buffer, never in a file that could grow.
+func (c *Clone) LogTail(n int) string { return c.proc.LogTail(n) }
 
 // Exec runs a command in the clone (see agentclient.Client.Exec, whose
 // rules all apply: ctx needs a deadline, and the host enforces the

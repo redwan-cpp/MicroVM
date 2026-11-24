@@ -85,6 +85,11 @@ func TestRestoreFromSnapshot(t *testing.T) {
 		if c.Timings().DeTwin <= 0 {
 			t.Errorf("de-twin took %v: it did not run", c.Timings().DeTwin)
 		}
+		// Firecracker's log reaches its ring buffer through the pipe, which
+		// it opened after we did (vmm.Process.openLog).
+		if log := c.LogTail(4096); !strings.Contains(log, "Running Firecracker") {
+			t.Errorf("restore %d: Firecracker's log did not arrive through its pipe: %q", i+1, log)
+		}
 
 		// The clone's files are hard links to the store's: one more link
 		// each while the clone runs.
