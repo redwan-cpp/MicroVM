@@ -84,6 +84,16 @@ func TestBuildRefusesBadSpecs(t *testing.T) {
 		"owned path":       func(s *Spec) { s.Owned = []string{"dir/scratch.ext4"} },
 		"owned dot-dot":    func(s *Spec) { s.Owned = []string{".."} },
 		"owned and shared": func(s *Spec) { s.Owned = []string{"vm.snap"} },
+		// Names the jailer itself creates in the chroot root.
+		"shared binary name": func(s *Spec) { s.Shared = []string{"/srv/other/firecracker"} },
+		"owned pid file":     func(s *Spec) { s.Owned = []string{"firecracker.pid"} },
+		"owned dev":          func(s *Spec) { s.Owned = []string{"dev"} },
+		"shared run":         func(s *Spec) { s.Shared = []string{"/srv/state/run"} },
+		"owned old_root":     func(s *Spec) { s.Owned = []string{"old_root"} },
+		"renamed binary": func(s *Spec) {
+			s.Firecracker = "/opt/fc/fc-v1.17"
+			s.Owned = []string{"fc-v1.17"}
+		},
 		"negative CPU quota": func(s *Spec) {
 			s.Limits.CPUs = -1
 		},
@@ -96,6 +106,20 @@ func TestBuildRefusesBadSpecs(t *testing.T) {
 				t.Errorf("Build accepted %+v", spec)
 			}
 		})
+	}
+}
+
+func TestJailPaths(t *testing.T) {
+	// The folder is named after the binary, whatever it is called.
+	if got := ChrootDir("/s/jail", "/opt/fc/fc-v1.17", "r-1"); got != "/s/jail/fc-v1.17/r-1/root" {
+		t.Errorf("ChrootDir = %s", got)
+	}
+	if got := JailDir("/s/jail", "/opt/fc/firecracker", "r-1"); got != "/s/jail/firecracker/r-1" {
+		t.Errorf("JailDir = %s", got)
+	}
+	if got := ReservedNames("/opt/fc/firecracker"); !reflect.DeepEqual(got,
+		[]string{"firecracker", "firecracker.pid", "dev", "run", "old_root"}) {
+		t.Errorf("ReservedNames = %v", got)
 	}
 }
 

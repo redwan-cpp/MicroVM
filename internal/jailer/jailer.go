@@ -133,25 +133,28 @@ func Build(spec Spec) (*Plan, error) {
 		return nil, fmt.Errorf("jailer: limits %+v must all be positive", l)
 	}
 
-	execName := filepath.Base(spec.Firecracker)
-	jailDir := filepath.Join(spec.ChrootBase, execName, spec.ID)
 	plan := &Plan{
-		JailDir:   jailDir,
-		ChrootDir: filepath.Join(jailDir, "root"),
+		JailDir:   JailDir(spec.ChrootBase, spec.Firecracker, spec.ID),
+		ChrootDir: ChrootDir(spec.ChrootBase, spec.Firecracker, spec.ID),
 		Cgroup:    ParentCgroup + "/" + spec.ID,
 	}
+	// The names the jailer itself creates in the chroot root are taken: a
+	// file of ours there would make the jailer fail, or be replaced.
 	seen := make(map[string]bool)
+	for _, name := range ReservedNames(spec.Firecracker) {
+		seen[name] = true
+	}
 	for _, from := range spec.Shared {
 		name := filepath.Base(from)
 		if !filepath.IsAbs(from) || seen[name] {
-			return nil, fmt.Errorf("jailer: shared file %q must be absolute and its name unique", from)
+			return nil, fmt.Errorf("jailer: shared file %q must be absolute, and its name unique and not one the jailer uses", from)
 		}
 		seen[name] = true
 		plan.Links = append(plan.Links, Link{From: from, To: filepath.Join(plan.ChrootDir, name)})
 	}
 	for _, name := range spec.Owned {
 		if name != filepath.Base(name) || name == "." || name == ".." || seen[name] {
-			return nil, fmt.Errorf("jailer: owned file %q must be a unique plain name", name)
+			return nil, fmt.Errorf("jailer: owned file %q must be a plain name, unique and not one the jailer uses", name)
 		}
 		seen[name] = true
 		plan.Owned = append(plan.Owned, filepath.Join(plan.ChrootDir, name))
@@ -175,6 +178,27 @@ func Build(spec Spec) (*Plan, error) {
 	}
 	plan.Args = append(plan.Args, spec.FirecrackerArgs...)
 	return plan, nil
+}
+
+// JailDir is where the jailer puts the jail with this ID:
+// <chrootBase>/<name of the firecracker binary>/<id>. Both paths must
+// already be absolute and free of symlinks, as the jailer resolves them.
+func JailDir(chrootBase, firecracker, id string) string {
+	return filepath.Join(chrootBase, filepath.Base(firecracker), id)
+}
+
+// ChrootDir is JailDir/root, which becomes Firecracker's "/".
+func ChrootDir(chrootBase, firecracker, id string) string {
+	return filepath.Join(JailDir(chrootBase, firecracker, id), "root")
+}
+
+// ReservedNames are the names the jailer creates in the chroot root
+// itself, so nothing else may use them there: its copy of the firecracker
+// binary, that binary's pid file, the dev and run folders, and old_root,
+// which it uses for a moment during pivot_root.
+func ReservedNames(firecracker string) []string {
+	name := filepath.Base(firecracker)
+	return []string{name, name + ".pid", "dev", "run", "old_root"}
 }
 
 // validID checks a jail ID the way the jailer does, but ASCII only (the

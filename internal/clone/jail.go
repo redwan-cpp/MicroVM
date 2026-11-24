@@ -44,7 +44,7 @@ func (c *Clone) prepareJailed(root *state.Root, opts Options) (vmm.Config, error
 		return vmm.Config{}, fmt.Errorf("jailer mode needs root (running as uid %d)", euid)
 	}
 	if !root.CheckedForJailer() {
-		return vmm.Config{}, errors.New("jailer mode needs the state folder opened with state.Options{Jailer: true}")
+		return vmm.Config{}, errors.New("jailer mode needs the state folder opened with state.Options{Jailer: true, Firecracker: ...}")
 	}
 	if err := checkIdentity(j.UID, j.GID); err != nil {
 		return vmm.Config{}, err

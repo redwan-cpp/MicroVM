@@ -68,7 +68,8 @@ type Options struct {
 	Firecracker string
 	// Jailer, if not nil, restores the clone in jailer mode. That needs
 	// root (the jailer creates chroots, device files and cgroups), and the
-	// store's state folder opened with state.Options{Jailer: true}.
+	// store's state folder opened with state.Options{Jailer: true,
+	// Firecracker: ...}.
 	Jailer *JailerOptions
 }
 

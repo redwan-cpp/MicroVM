@@ -55,7 +55,7 @@ func TestJailerRestore(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	root, err := state.Open(stateDir, state.Options{Jailer: true})
+	root, err := state.Open(stateDir, state.Options{Jailer: true, Firecracker: a.firecracker})
 	if err != nil {
 		t.Fatalf("open the state folder for jailer mode: %v", err)
 	}

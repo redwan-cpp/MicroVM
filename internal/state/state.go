@@ -27,6 +27,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/redwan-cpp/MicroVM/internal/jailer"
 )
 
 // EnvVar names the environment variable that moves the state folder.
@@ -66,11 +68,17 @@ func Dir(def string) string {
 
 // Options changes what Open checks.
 type Options struct {
-	// Jailer means the caller will start microVMs through the jailer. The
-	// jailer creates device files (/dev/kvm) inside each chroot, and a
-	// filesystem mounted "nodev" refuses to open them, so Open checks
-	// that the state folder's filesystem is not mounted that way.
+	// Jailer means the caller will start microVMs through the jailer. Then
+	// Open also checks that the state folder's filesystem is mounted
+	// neither "nodev" (the jailer creates /dev/kvm inside each chroot, and
+	// nodev refuses to open device files) nor "noexec" (the jailer runs
+	// its copy of firecracker from inside the chroot), and that socket
+	// paths in a chroot fit.
 	Jailer bool
+	// Firecracker is the firecracker program the jailer will run; jailer
+	// mode needs it. The jailer names each chroot folder after it, so its
+	// name is part of every socket path in a chroot.
+	Firecracker string
 }
 
 // Root is an opened, checked state folder.
@@ -84,9 +92,9 @@ type Root struct {
 //
 //   - snapshots/, runs/ and jail/ are all on the same filesystem, so hard
 //     links between them work;
-//   - the longest Unix socket path a microVM will get, in runs/ or in a
-//     jailer chroot, fits in the 107 bytes Linux allows;
-//   - with opts.Jailer, the filesystem is not mounted nodev.
+//   - the longest Unix socket path a microVM will get, in runs/ (and with
+//     opts.Jailer in a chroot), fits in the 107 bytes Linux allows;
+//   - with opts.Jailer, the filesystem is not mounted nodev or noexec.
 func Open(dir string, opts Options) (*Root, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -109,20 +117,43 @@ func Open(dir string, opts Options) (*Root, error) {
 	if err := sameFilesystem(devices); err != nil {
 		return nil, err
 	}
-	if err := checkSocketPaths(r.RunsDir(), r.JailDir()); err != nil {
+	if err := checkSocketPath(runSocketPath(r.RunsDir())); err != nil {
 		return nil, err
 	}
 	if opts.Jailer {
-		var sfs unix.Statfs_t
-		if err := unix.Statfs(r.JailDir(), &sfs); err != nil {
-			return nil, fmt.Errorf("state: %s: %w", r.JailDir(), err)
-		}
-		if err := checkNodev(r.JailDir(), sfs.Flags); err != nil {
+		if err := r.checkJailer(opts.Firecracker); err != nil {
 			return nil, err
 		}
 		r.jailer = true
 	}
 	return r, nil
+}
+
+// checkJailer checks what jailer mode needs from the state folder.
+func (r *Root) checkJailer(firecracker string) error {
+	if firecracker == "" {
+		return errors.New("state: jailer mode needs Options.Firecracker")
+	}
+	// The jailer resolves symlinks in both paths, so we do too.
+	fc, err := filepath.Abs(firecracker)
+	if err == nil {
+		fc, err = filepath.EvalSymlinks(fc)
+	}
+	if err != nil {
+		return fmt.Errorf("state: firecracker program: %w", err)
+	}
+	base, err := filepath.EvalSymlinks(r.JailDir())
+	if err != nil {
+		return fmt.Errorf("state: %w", err)
+	}
+	if err := checkSocketPath(jailSocketPath(base, fc)); err != nil {
+		return err
+	}
+	var sfs unix.Statfs_t
+	if err := unix.Statfs(base, &sfs); err != nil {
+		return fmt.Errorf("state: %s: %w", base, err)
+	}
+	return checkMountFlags(base, sfs.Flags)
 }
 
 // sameFilesystem checks that every folder in devices (path → st_dev) is on
@@ -144,29 +175,38 @@ func sameFilesystem(devices map[string]uint64) error {
 	return nil
 }
 
-// checkSocketPaths checks that the longest socket path of a rootless run
-// (<runs>/<id>/api.sock) and of a jailed one
-// (<jail>/firecracker/<id>/root/api.sock) fit in a Unix socket address.
-func checkSocketPaths(runs, jail string) error {
-	id := strings.Repeat("x", IDLen) // every ID has this length
-	for _, path := range []string{
-		filepath.Join(runs, id, "api.sock"),
-		filepath.Join(jail, "firecracker", id, "root", "api.sock"),
-	} {
-		if len(path) > maxSocketPath {
-			return fmt.Errorf("state: socket paths under %s would be %d bytes, Linux allows at most %d; "+
-				"use a shorter state folder (set %s)", filepath.Dir(filepath.Dir(path)), len(path), maxSocketPath, EnvVar)
-		}
+// runSocketPath is the longest socket path of a rootless run:
+// <runs>/<id>/api.sock.
+func runSocketPath(runs string) string {
+	return filepath.Join(runs, strings.Repeat("x", IDLen), "api.sock") // every ID has this length
+}
+
+// jailSocketPath is the longest socket path of a jailed run, in the chroot
+// the jailer makes for the program firecracker under jailBase:
+// <jail>/<binary name>/<id>/root/api.sock.
+func jailSocketPath(jailBase, firecracker string) string {
+	return filepath.Join(jailer.ChrootDir(jailBase, firecracker, strings.Repeat("x", IDLen)), "api.sock")
+}
+
+// checkSocketPath checks that path fits in a Unix socket address.
+func checkSocketPath(path string) error {
+	if len(path) > maxSocketPath {
+		return fmt.Errorf("state: socket paths such as %s would be %d bytes, Linux allows at most %d; "+
+			"use a shorter state folder (set %s)", path, len(path), maxSocketPath, EnvVar)
 	}
 	return nil
 }
 
-// checkNodev fails if flags (Statfs_t.Flags of dir's filesystem) say it is
-// mounted nodev.
-func checkNodev(dir string, flags int64) error {
+// checkMountFlags fails if flags (Statfs_t.Flags of dir's filesystem) say
+// it is mounted nodev or noexec.
+func checkMountFlags(dir string, flags int64) error {
 	if flags&unix.ST_NODEV != 0 {
 		return fmt.Errorf("state: %s is on a filesystem mounted nodev, so the jailer's /dev/kvm "+
 			"inside a chroot could not be opened; move the state folder (set %s)", dir, EnvVar)
+	}
+	if flags&unix.ST_NOEXEC != 0 {
+		return fmt.Errorf("state: %s is on a filesystem mounted noexec, so the jailer could not run "+
+			"its copy of firecracker inside a chroot; move the state folder (set %s)", dir, EnvVar)
 	}
 	return nil
 }

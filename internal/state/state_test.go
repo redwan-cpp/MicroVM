@@ -63,20 +63,27 @@ func TestOpenRefusesFoldersOnDifferentFilesystems(t *testing.T) {
 }
 
 func TestCheckSocketPaths(t *testing.T) {
-	short := "/srv/state"
-	if err := checkSocketPaths(short+"/runs", short+"/jail"); err != nil {
-		t.Errorf("short paths: %v", err)
+	if err := checkSocketPath(runSocketPath("/srv/state/runs")); err != nil {
+		t.Errorf("short run path: %v", err)
+	}
+	if err := checkSocketPath(jailSocketPath("/srv/state/jail", "/opt/firecracker")); err != nil {
+		t.Errorf("short jail path: %v", err)
 	}
 
-	// The jail path is the longer one: firecracker/<id>/root/api.sock.
-	// Find the longest jail folder that still fits, then go one over.
+	// A jailed socket is <jail>/<binary name>/<id>/root/api.sock. Find the
+	// longest jail folder that still fits with a binary called
+	// "firecracker", then go one over.
 	room := maxSocketPath - len("/firecracker/") - IDLen - len("/root/api.sock")
 	fits := "/" + strings.Repeat("j", room-1)
-	if err := checkSocketPaths("/r", fits); err != nil {
+	if err := checkSocketPath(jailSocketPath(fits, "/opt/firecracker")); err != nil {
 		t.Errorf("jail folder of %d bytes: %v, want it to fit exactly", len(fits), err)
 	}
-	if err := checkSocketPaths("/r", fits+"j"); err == nil {
+	if err := checkSocketPath(jailSocketPath(fits+"j", "/opt/firecracker")); err == nil {
 		t.Errorf("jail folder of %d bytes: no error, want one", len(fits)+1)
+	}
+	// The binary's name counts: a longer one no longer fits.
+	if err := checkSocketPath(jailSocketPath(fits, "/opt/firecracker-v1.17.0")); err == nil {
+		t.Error("a longer binary name still fits, want an error")
 	}
 }
 
@@ -88,12 +95,25 @@ func TestOpenRefusesALongPath(t *testing.T) {
 	}
 }
 
-func TestCheckNodev(t *testing.T) {
-	if err := checkNodev("/x", unix.ST_RELATIME); err != nil {
-		t.Errorf("without nodev: %v", err)
+func TestCheckMountFlags(t *testing.T) {
+	if err := checkMountFlags("/x", unix.ST_RELATIME|unix.ST_NOSUID); err != nil {
+		t.Errorf("without nodev or noexec: %v", err)
 	}
-	if err := checkNodev("/x", unix.ST_NODEV|unix.ST_NOSUID); err == nil {
-		t.Error("with nodev: no error, want one")
+	if err := checkMountFlags("/x", unix.ST_NODEV|unix.ST_NOSUID); err == nil || !strings.Contains(err.Error(), "nodev") {
+		t.Errorf("with nodev: %v, want a nodev error", err)
+	}
+	if err := checkMountFlags("/x", unix.ST_NOEXEC); err == nil || !strings.Contains(err.Error(), "noexec") {
+		t.Errorf("with noexec: %v, want a noexec error", err)
+	}
+}
+
+func TestOpenJailerNeedsTheBinary(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Open(dir, Options{Jailer: true}); err == nil || !strings.Contains(err.Error(), "Options.Firecracker") {
+		t.Errorf("jailer Open without a binary: %v, want an error", err)
+	}
+	if _, err := Open(dir, Options{Jailer: true, Firecracker: filepath.Join(dir, "missing")}); err == nil {
+		t.Error("jailer Open with a missing binary succeeded, want an error")
 	}
 }
 
@@ -112,18 +132,24 @@ func TestOpenChecksNodevInJailerMode(t *testing.T) {
 	if r, err := Open(dir, Options{}); err != nil || r.CheckedForJailer() {
 		t.Errorf("rootless Open: %v, want nodev to be fine (and not checked for the jailer)", err)
 	}
-	if _, err := Open(dir, Options{Jailer: true}); err == nil || !strings.Contains(err.Error(), "nodev") {
+	if _, err := Open(dir, Options{Jailer: true, Firecracker: os.Args[0]}); err == nil || !strings.Contains(err.Error(), "nodev") {
 		t.Errorf("jailer Open: %v, want a nodev error", err)
 	}
 }
 
 func TestCheckedForJailer(t *testing.T) {
-	dir := t.TempDir()
-	var sfs unix.Statfs_t
-	if err := unix.Statfs(dir, &sfs); err != nil || sfs.Flags&unix.ST_NODEV != 0 {
-		t.Skip("the test folder is on a nodev filesystem here")
+	// Not t.TempDir(): its name includes the test's, and the socket paths
+	// would get too long under a longer $TMPDIR.
+	dir, err := os.MkdirTemp("", "st-")
+	if err != nil {
+		t.Fatal(err)
 	}
-	r, err := Open(dir, Options{Jailer: true})
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	var sfs unix.Statfs_t
+	if err := unix.Statfs(dir, &sfs); err != nil || sfs.Flags&(unix.ST_NODEV|unix.ST_NOEXEC) != 0 {
+		t.Skip("the test folder is on a nodev or noexec filesystem here")
+	}
+	r, err := Open(dir, Options{Jailer: true, Firecracker: os.Args[0]})
 	if err != nil || !r.CheckedForJailer() {
 		t.Errorf("Open with Jailer: %v, checked %v; want it checked", err, r != nil && r.CheckedForJailer())
 	}
