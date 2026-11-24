@@ -4,7 +4,7 @@
 
 AI agents and scripts run code with our permissions, and one bad command can delete files or leak secrets. Containers share the host kernel, so a kernel bug can break out of them. Full VMs are safe but take seconds to start. MicroVM Sandbox gives **every run its own hardware-isolated microVM**. It restores the VM from a copy-on-write snapshot, applies a per-run policy (CPU, memory, files, network), runs the command and destroys everything afterwards.
 
-> **Status:** week 3 of 13. `make snapshots` saves a booted microVM, with `sandbox-agent` running inside, as a base snapshot per size class, and `make e2e` restores clones from it in about 15–20 ms (a cold boot takes about 80 ms to reach the agent), resets each clone's clock and random state, runs commands over gRPC on vsock and destroys the clone. Clones run rootless by default; jailer mode (chroot, UID drop, cgroup limits) needs root and is tested by hand ([ADR-0005](docs/adr/0005-rootless-and-jailer-modes.md)). `sandboxd` and `sandboxctl` arrive in week 4. See the [build plan](docs/build-plan.md).
+> **Status:** week 3 of 13. `make snapshots` saves a booted microVM, with `sandbox-agent` running inside, as a base snapshot per size class, and `make e2e` restores clones from it in about 15–20 ms (a cold boot takes about 80 ms to reach the agent), resets each clone's clock and random state, runs commands over gRPC on vsock and destroys the clone. Clones run rootless by default. Jailer mode (chroot, UID drop, cgroup limits) needs root: it passed one manual root run on the dev machine on 2026-11-18, restoring a clone in 51.4 ms, and that run is by hand, not in CI ([ADR-0005](docs/adr/0005-rootless-and-jailer-modes.md)). `sandboxd` and `sandboxctl` arrive in week 4. See the [build plan](docs/build-plan.md).
 > **Security:** research and teaching project, **not audited**. See [SECURITY.md](SECURITY.md).
 
 ## How it works
@@ -69,6 +69,17 @@ sudo bin/e2e-jailer.test -test.run Jailer -test.v                 # the only ste
 ```
 
 `make e2e-jailer` runs exactly these three steps (it asks for your sudo password at the last one). As root, the test creates only a jail folder under `guest/out/state/jail/` and a cgroup under `/sys/fs/cgroup/microvm/`, and removes both. If a cleanup fails, it prints the `sudo rm -rf …` or `sudo rmdir …` that finishes the job. Without root, the binary skips the test.
+
+The last run (2026-11-18, dev machine) passed: restore in jailer mode took 51.4 ms (prepare 0.4, process start 36.6, LoadSnapshot 7.2, agent ready 6.0, de-twin 1.2 ms), against about 15–20 ms rootless.
+
+If a root run is interrupted (Ctrl-C, a timeout) before it cleans up, finish by hand. `<id>` is the `r-…` folder under `guest/out/state/jail/firecracker/`:
+
+```bash
+sudo pkill -KILL -u 70000                            # the jailed Firecracker (UID 70000)
+sudo rm -rf guest/out/state/jail/firecracker/<id>    # its chroot
+sudo rmdir guest/out/state/jail/firecracker          # the shared parent, once it is empty
+sudo rmdir /sys/fs/cgroup/microvm/<id> /sys/fs/cgroup/microvm   # its cgroup, then the parent
+```
 
 ## Roadmap
 

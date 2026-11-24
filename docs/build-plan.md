@@ -53,7 +53,9 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 - [x] One state folder on one filesystem (`internal/state`, `MICROVM_STATE_DIR`, default `guest/out/state`): `snapshots/`, `runs/`, `jail/`, checked for hard links, socket-path length and (jailer mode) nodev
 - [x] `internal/snapshot`: build a base snapshot per size class (small, medium), versioned store with a `current` symlink, files 0444, `manifest.json` with hashes checked once when the store is opened; `make snapshots`
 - [x] Restore a single clone and measure it (`internal/clone`): hard links, LoadSnapshot, agent, de-twin (SyncTime + Reseed); about 15–20 ms in rootless mode against an 80 ms cold boot (InstanceStart → agent ready)
-- [x] Jailer integration (`internal/jailer`, jailer mode in `internal/clone`): chroot per clone, UID drop (70000), cgroup v2 limits per size class, hard-linked read-only memory file, `cgroup.kill` cleanup; its real-VM test runs by hand with sudo (`make e2e-jailer`), never in CI. Two modes, one snapshot: [ADR-0005](adr/0005-rootless-and-jailer-modes.md)
+- [x] Jailer integration (`internal/jailer`, jailer mode in `internal/clone`): chroot per clone, UID drop (70000), cgroup v2 limits per size class, hard-linked read-only memory file, `cgroup.kill` cleanup. Two modes, one snapshot: [ADR-0005](adr/0005-rootless-and-jailer-modes.md)
+  - Verified by **one manual root run** on the dev machine on 2026-11-18 (`sudo bin/e2e-jailer.test -test.run Jailer -test.v`, built from 1eb5fd7): `TestJailerRestore` and all four subtests passed, and no jail folder, `microvm` cgroup or root-owned file was left afterwards. Jailer-mode restore: prepare 0.4 ms, process start 36.6 ms, LoadSnapshot 7.2 ms, agent ready 6.0 ms, de-twin 1.2 ms, total 51.4 ms (rootless, same machine: process start about 1.4 ms, total about 15–20 ms; the jailer's own start is the difference).
+  - The root run is manual and never in CI. **Repeat it** after the review fixes (5c248e3, be7943e): they change only error paths, the test's cleanup registration and checks that run before the jailer starts, but jailer mode is only known to work when a root run says so.
 - [x] `buf breaking` in `make lint` and CI against `origin/main` (`.git#branch=origin/main`, checkout with `fetch-depth: 0`)
 - [x] Learning docs 09 (snapshots and copy-on-write) and 10 (the jailer); threat model: T9 counted in jailer mode only
 - [x] Week-2 review follow-ups: CI tools cache keyed on `go.mod` too, exit code (-1..255) and signal (0..64) checks in `agentclient`, Firecracker's log in the run folder under the state folder, a `LockOSThread` warning on `vmm.Start`
@@ -115,7 +117,7 @@ Tick items as they land. Each week ends with a commit, this file updated, and a 
 | KVM missing on the host | **Closed (wk 0):** KVM, nested virtualization and vhost-vsock all work | — |
 | Snapshot restore is slow or fails | **Closed (wk 3):** a restore takes about 15–20 ms, rootless | Report cold-boot numbers only |
 | Snapshot paths collide between clones | **Closed (wk 3):** relative paths in every snapshot, one folder per clone ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) | Restore clones one at a time |
-| Jailer needs root on the demo machine | Open: jailer mode is tested by hand with sudo (`make e2e-jailer`) | Rootless mode, said out loud ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) |
+| Jailer needs root on the demo machine | Open: jailer mode passed one manual root run on the dev machine (2026-11-18, restore 51.4 ms); it is not in CI, so repeat `make e2e-jailer` before Demo 1 | Rootless mode, said out loud ([ADR-0005](adr/0005-rootless-and-jailer-modes.md)) |
 | Networking takes too long | — | Keep networking off and say so in the report |
 | Scope creep | Freeze after week 4 | "Later" list |
 | Overclaiming security | [Threat model](threat-model.md), [SECURITY.md](../SECURITY.md) | State that it is not audited |

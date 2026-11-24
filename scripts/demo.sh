@@ -115,7 +115,8 @@ cat <<EOF
   ${G}✓ week 0${N}   foundations: plan, ADRs, threat model, Go skeleton, CI, pinned tools
   ${G}✓ week 1${N}   pinned guest kernel, rootless root disk, boot by hand through the API
   ${G}✓ week 2${N}   sandbox-agent inside the VM, gRPC over vsock; the host enforces every limit (make e2e)
-  ${G}✓ week 3${N}   snapshots: restore in ~15-20 ms instead of booting; jailer mode: chroot, UID drop, cgroups
+  ${G}✓ week 3${N}   snapshots: restore in ~15-20 ms instead of booting; jailer mode (chroot, UID drop,
+             cgroups): one manual root run passed on the dev machine, 51 ms per restore (not in CI)
     week 4   ${B}Demo 1${N}: sandboxctl run, three clones at once from one snapshot
     week 8   ${B}Demo 2${N}: networking off by default, policies change the limits
     week 9   escape-test suite: every attempt blocked or logged
