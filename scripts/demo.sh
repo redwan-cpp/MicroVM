@@ -109,13 +109,14 @@ step "The policy decides the VM's size" \
 run "scripts/boot-vm.sh -q --vcpus 2 --mem 512 -- 'nproc; free -m | head -2'"
 
 step "What comes next" \
-  "Today every VM cold-boots. Next we restore from a snapshot, add the jailer, and put sandboxd in charge."
+  "Every VM above cold-booted. make e2e already restores clones from a snapshot; next, sandboxd puts it all in charge."
 cat <<EOF
 
   ${G}✓ week 0${N}   foundations: plan, ADRs, threat model, Go skeleton, CI, pinned tools
   ${G}✓ week 1${N}   pinned guest kernel, rootless root disk, boot by hand through the API
   ${G}✓ week 2${N}   sandbox-agent inside the VM, gRPC over vsock; the host enforces every limit (make e2e)
-    week 3   snapshots + jailer: restore instead of boot; chroot, UID drop, cgroups
+  ${G}✓ week 3${N}   snapshots: restore in ~15-20 ms instead of booting; jailer mode (chroot, UID drop,
+             cgroups): one manual root run passed on the dev machine, 51 ms per restore (not in CI)
     week 4   ${B}Demo 1${N}: sandboxctl run, three clones at once from one snapshot
     week 8   ${B}Demo 2${N}: networking off by default, policies change the limits
     week 9   escape-test suite: every attempt blocked or logged

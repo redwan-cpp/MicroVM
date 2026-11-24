@@ -168,6 +168,42 @@ func TestExecProtocolViolations(t *testing.T) {
 	}
 }
 
+func TestExecRefusesImpossibleExitStatuses(t *testing.T) {
+	tests := map[string]*agentv1.ExitStatus{
+		"exit code 256":   {ExitCode: 256},
+		"exit code -2":    {ExitCode: -2},
+		"huge exit code":  {ExitCode: 1 << 30},
+		"signal 65":       {ExitCode: -1, Signal: 65},
+		"negative signal": {ExitCode: -1, Signal: -9},
+	}
+	for name, exit := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := serveExec(t, func(_ *agentv1.ExecRequest, stream agentv1.AgentService_ExecServer) error {
+				return stream.Send(exitEvent(exit))
+			})
+			res, err := execWithin(t, c, 5*time.Second, &agentv1.ExecRequest{Argv: []string{"x"}}, nil)
+			var perr *ProtocolError
+			if !errors.As(err, &perr) {
+				t.Errorf("err = %v, want a *ProtocolError", err)
+			}
+			if res.Exited {
+				t.Errorf("result = %+v, want Exited false", res)
+			}
+		})
+	}
+
+	// The edges of the ranges are real statuses.
+	for _, exit := range []*agentv1.ExitStatus{{ExitCode: 255}, {ExitCode: -1, Signal: 64}, {ExitCode: -1, Signal: 9}} {
+		c := serveExec(t, func(_ *agentv1.ExecRequest, stream agentv1.AgentService_ExecServer) error {
+			return stream.Send(exitEvent(exit))
+		})
+		res, err := execWithin(t, c, 5*time.Second, &agentv1.ExecRequest{Argv: []string{"x"}}, nil)
+		if err != nil || !res.Exited || res.ExitCode != int(exit.GetExitCode()) || res.Signal != int(exit.GetSignal()) {
+			t.Errorf("exit %v: result %+v, %v; want it accepted", exit, res, err)
+		}
+	}
+}
+
 func TestExecHangingAgentHitsTheHostDeadline(t *testing.T) {
 	c := serveExec(t, func(_ *agentv1.ExecRequest, stream agentv1.AgentService_ExecServer) error {
 		<-stream.Context().Done() // never answer
@@ -338,18 +374,24 @@ func (l handshakeListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	return conn, answerConnect(conn)
+}
+
+// answerConnect reads the "CONNECT <port>" line and answers "OK", like
+// Firecracker when the guest port is open. It closes conn on failure.
+func answerConnect(conn net.Conn) error {
 	b := make([]byte, 1)
 	for b[0] != '\n' { // read "CONNECT 1024\n" byte by byte
 		if _, err := conn.Read(b); err != nil {
 			_ = conn.Close()
-			return nil, err
+			return err
 		}
 	}
 	if _, err := io.WriteString(conn, "OK 1\n"); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return err
 	}
-	return conn, nil
+	return nil
 }
 
 func TestDialOverAVsockSocket(t *testing.T) {

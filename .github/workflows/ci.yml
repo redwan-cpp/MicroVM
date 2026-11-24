@@ -16,16 +16,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The whole history, not just the last commit: `make lint` runs
+          # buf breaking, which compares proto/ with origin/main.
+          fetch-depth: 0
+      # Make sure origin/main is the newest main, also on pull requests.
+      - run: git fetch origin main
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod # same Go version as on your computer
       # The pinned tools (golangci-lint, buf, protoc plugins) take minutes to
       # build. Keep bin/tools between runs; the pins live in the Makefile, so
-      # a new pin means a new cache.
+      # a new pin means a new cache. The tools are built with the Go version
+      # in go.mod, so a new Go version means a new cache too.
       - uses: actions/cache@v6
         with:
           path: bin/tools
-          key: tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          key: tools-${{ runner.os }}-${{ hashFiles('Makefile', 'go.mod') }}
       - run: make lint
       - run: make test
       - run: make build

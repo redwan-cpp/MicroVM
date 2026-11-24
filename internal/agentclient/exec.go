@@ -156,6 +156,10 @@ func (c *Client) Exec(ctx context.Context, req *agentv1.ExecRequest, stdout, std
 			if exit == nil {
 				exit = &agentv1.ExitStatus{}
 			}
+			if err := checkExit(exit); err != nil {
+				stopStream()
+				return result(), err
+			}
 			continue // wait for the end of the stream
 		default:
 			stopStream()
@@ -173,6 +177,26 @@ func (c *Client) Exec(ctx context.Context, req *agentv1.ExecRequest, stdout, std
 			return result(), err
 		}
 	}
+}
+
+// The ranges a real exit status can have on Linux. A number outside them
+// can only come from a broken or hostile agent; refusing it keeps records
+// of runs (the audit log, from week 4) clean.
+const (
+	minExitCode = -1  // killed by a signal
+	maxExitCode = 255 // exit statuses are one byte
+	maxSignal   = 64  // SIGRTMAX on Linux
+)
+
+// checkExit refuses an exit status no real process can have.
+func checkExit(exit *agentv1.ExitStatus) error {
+	if code := exit.GetExitCode(); code < minExitCode || code > maxExitCode {
+		return &ProtocolError{Reason: fmt.Sprintf("exit code %d is outside %d..%d", code, minExitCode, maxExitCode)}
+	}
+	if sig := exit.GetSignal(); sig < 0 || sig > maxSignal {
+		return &ProtocolError{Reason: fmt.Sprintf("signal %d is outside 0..%d", sig, maxSignal)}
+	}
+	return nil
 }
 
 // errOverCap is returned by capped.write when output went past the cap.

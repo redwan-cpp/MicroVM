@@ -38,7 +38,7 @@ TOOLS              := $(GOLANGCI_LINT) $(BUF) $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_G
 GEN_DIR := internal/gen
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint fmt generate generate-check tools firecracker guest boot demo e2e bench clean
+.PHONY: help build test lint breaking fmt generate generate-check tools firecracker guest snapshots boot demo e2e e2e-jailer bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -52,12 +52,30 @@ test: ## Run the unit tests (with the race detector)
 	go test -race -count=1 ./...
 
 # `-tags e2e` also checks test/e2e, which only builds with that tag (it
-# needs KVM, so it never runs in CI, but it must still compile).
+# needs KVM, so it never runs in CI, but it must still compile), and
+# `-tags 'e2e jailer'` adds the jailer test (it needs root as well).
 lint: $(GOLANGCI_LINT) $(BUF) ## Check the code for mistakes and style problems
 	$(BUF) lint
+	@$(MAKE) --no-print-directory breaking
 	go vet ./...
 	go vet -tags e2e ./...
+	go vet -tags 'e2e jailer' ./...
 	$(GOLANGCI_LINT) run ./...
+
+# Once a version of the API (such as agent/v1) is on main, no change may
+# break code generated from it: buf compares proto/ here with proto/ on
+# origin/main (the rules are in buf.yaml). CI fetches origin/main first.
+# Until main has a .proto file there is nothing to compare, so the check
+# says so and passes.
+BREAKING_AGAINST := origin/main
+
+breaking: $(BUF) ## Fail if proto/ breaks compatibility with origin/main (part of lint)
+	@if git ls-tree -r --name-only $(BREAKING_AGAINST) -- proto 2>/dev/null | grep -q '\.proto$$'; then \
+		echo "buf breaking --against '.git#branch=$(BREAKING_AGAINST)'"; \
+		$(BUF) breaking --against '.git#branch=$(BREAKING_AGAINST)'; \
+	else \
+		echo "buf breaking: skipped, $(BREAKING_AGAINST) has no .proto files (or is missing: git fetch origin main)"; \
+	fi
 
 fmt: $(GOLANGCI_LINT) ## Auto-format all Go code
 	$(GOLANGCI_LINT) fmt ./...
@@ -117,6 +135,11 @@ guest: build ## Download the guest kernel and build the guest root disk (no sudo
 	./guest/fetch-kernel.sh
 	./guest/build-rootfs.sh
 
+# One base snapshot per size class, in the state folder (guest/out/state,
+# or $MICROVM_STATE_DIR). Each build cold-boots a VM, so it needs KVM.
+snapshots: guest ## Build the base snapshots (small, medium) into guest/out/state (needs KVM)
+	./bin/sandboxd build-snapshots
+
 boot: ## Boot one microVM by hand through Firecracker's API, then destroy it
 	./scripts/boot-vm.sh
 
@@ -125,8 +148,18 @@ demo: ## Live demo, step by step (press Enter between steps)
 
 # They need KVM and the guest image, so they never run in GitHub CI (CI only
 # checks that they compile, through `make lint`).
-e2e: guest ## Boot real microVMs and test the agent inside them (needs KVM)
+# Each test builds the snapshot it needs in its own state folder under
+# guest/out/, so `make snapshots` is not needed first.
+e2e: guest ## Boot and restore real microVMs and test the agent inside them (needs KVM)
 	go test -tags e2e -count=1 -v ./test/e2e/...
+
+# Jailer mode needs root, and nothing is ever built as root. So the test is
+# compiled into one binary as you, against the snapshots `make snapshots`
+# built as you, and only that binary runs with sudo. As root it creates
+# only a jail folder in guest/out/state/jail/ and a cgroup, and removes both.
+e2e-jailer: snapshots ## Test jailer mode on a real microVM: builds as you, then runs one test binary with sudo
+	go test -c -tags 'e2e jailer' -o bin/e2e-jailer.test ./test/e2e
+	sudo bin/e2e-jailer.test -test.run Jailer -test.v
 
 bench: ## Speed benchmarks (not built yet: week 10)
 	@echo "bench: skipped, nothing to run yet (arrives in week 10)"
