@@ -153,11 +153,14 @@ demo: ## Live demo, step by step (press Enter between steps)
 e2e: guest ## Boot and restore real microVMs and test the agent inside them (needs KVM)
 	go test -tags e2e -count=1 -v ./test/e2e/...
 
-# Jailer mode needs root, and nothing is ever built as root. So the test is
+# Jailer mode needs root, and nothing is ever built as root. So the tests are
 # compiled into one binary as you, against the snapshots `make snapshots`
-# built as you, and only that binary runs with sudo. As root it creates
-# only a jail folder in guest/out/state/jail/ and a cgroup, and removes both.
-e2e-jailer: snapshots ## Test jailer mode on a real microVM: builds as you, then runs one test binary with sudo
+# built as you, and only that binary runs with sudo: one clone restored in
+# jailer mode, then Demo 1 (three clones at once) through a jailer-mode
+# daemon inside the test binary. As root they create only jail folders in
+# guest/out/state/jail/ and cgroups, and remove both; the audit log they
+# add to stays yours.
+e2e-jailer: snapshots ## Test jailer mode on real microVMs: builds as you, then runs one test binary with sudo
 	go test -c -tags 'e2e jailer' -o bin/e2e-jailer.test ./test/e2e
 	sudo bin/e2e-jailer.test -test.run Jailer -test.v
 

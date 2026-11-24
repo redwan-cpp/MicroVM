@@ -6,15 +6,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/redwan-cpp/MicroVM/internal/audit"
 	"github.com/redwan-cpp/MicroVM/internal/clone"
+	"github.com/redwan-cpp/MicroVM/internal/daemon"
+	daemonv1 "github.com/redwan-cpp/MicroVM/internal/gen/sandbox/daemon/v1"
 	"github.com/redwan-cpp/MicroVM/internal/jailer"
 	"github.com/redwan-cpp/MicroVM/internal/snapshot"
 	"github.com/redwan-cpp/MicroVM/internal/state"
@@ -30,13 +35,20 @@ import (
 //	    sudo bin/e2e-jailer.test -test.run Jailer -test.v
 //
 // It reuses the snapshot store that `make snapshots` built as you, and as
-// root it creates only a jail folder under <state>/jail/ and a cgroup
-// under /sys/fs/cgroup/microvm/, both removed at the end.
+// root it creates only jail folders under <state>/jail/ and cgroups under
+// /sys/fs/cgroup/microvm/, all removed at the end. TestJailerDemo1 also
+// runs a jailer-mode daemon inside this binary, on that state folder: it
+// adds three records to your audit log, which stays yours, and a socket
+// in a temporary folder outside the state folder.
 
 const jailerHowTo = "build and run it with: make e2e-jailer " +
 	"(or: go test -c -tags 'e2e jailer' -o bin/e2e-jailer.test ./test/e2e && sudo bin/e2e-jailer.test -test.run Jailer -test.v)"
 
-func TestJailerRestore(t *testing.T) {
+// jailerSetup skips the test unless it runs as root with the jailer and
+// a snapshot store built by the user (`make snapshots`), and returns the
+// artifacts, the jailer and the state folder.
+func jailerSetup(t *testing.T) (artifacts, string, string) {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("jailer mode needs root; " + jailerHowTo)
 	}
@@ -53,6 +65,28 @@ func TestJailerRestore(t *testing.T) {
 			t.Skipf("no snapshot store in %s (%v): run make snapshots as yourself first, without sudo", stateDir, err)
 		}
 	}
+	return a, jailerBin, stateDir
+}
+
+// cleanJailParents registers a cleanup that removes the shared parents of
+// every jail folder and clone cgroup (which the jailer creates as root)
+// once they are empty, and reports anything left in them. Register it
+// before anything that makes jails, so it runs after their cleanup.
+func cleanJailParents(t *testing.T, root *state.Root) {
+	t.Helper()
+	jailParent := filepath.Join(realPath(t, root.JailDir()), "firecracker")
+	cgroupParent := filepath.Join(cgroupRoot(t), jailer.ParentCgroup)
+	t.Cleanup(func() {
+		// rmdir only removes an empty folder or cgroup, so this never
+		// deletes anything that was left behind; errors are expected then.
+		_ = syscall.Rmdir(jailParent)
+		_ = syscall.Rmdir(cgroupParent)
+		reportLeftovers(t, jailParent, cgroupParent)
+	})
+}
+
+func TestJailerRestore(t *testing.T) {
+	a, jailerBin, stateDir := jailerSetup(t)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	root, err := state.Open(stateDir, state.Options{Jailer: true, Firecracker: a.firecracker})
@@ -72,12 +106,11 @@ func TestJailerRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Every jail folder and every clone cgroup goes into one of these two
-	// shared parents, which the jailer creates as root. The cleanup is
+	// Every jail folder and every clone cgroup goes into one of two shared
+	// parents, which the jailer creates as root. The cleanup is
 	// registered before Restore, so that a run that fails halfway also
 	// removes them, or says exactly what is left and how to remove it.
-	jailParent := filepath.Join(realPath(t, root.JailDir()), "firecracker")
-	cgroupParent := filepath.Join(cgroupRoot(t), jailer.ParentCgroup)
+	cleanJailParents(t, root)
 	var c *clone.Clone
 	t.Cleanup(func() {
 		if c != nil {
@@ -85,11 +118,6 @@ func TestJailerRestore(t *testing.T) {
 				t.Errorf("Destroy: %v", err)
 			}
 		}
-		// rmdir only removes an empty folder or cgroup, so this never
-		// deletes anything that was left behind; errors are expected then.
-		_ = syscall.Rmdir(jailParent)
-		_ = syscall.Rmdir(cgroupParent)
-		reportLeftovers(t, jailParent, cgroupParent)
 	})
 
 	c, err = clone.Restore(ctx, store, "small", clone.Options{
@@ -270,4 +298,174 @@ func realPath(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return resolved
+}
+
+// TestJailerDemo1 is Demo 1 through a jailer-mode daemon: the daemon runs
+// in this test binary (the only thing running as root; it was built as
+// you), on the store `make snapshots` built as you. The three clones must
+// run as three different jailed UIDs, each in a cgroup of its own, and
+// afterwards nothing may be left: no jail, no cgroup, and no root-owned
+// file anywhere in the state folder outside jail/ (the audit log and the
+// lock stay yours).
+func TestJailerDemo1(t *testing.T) {
+	a, jailerBin, stateDir := jailerSetup(t)
+	root, err := state.Open(stateDir, state.Options{Jailer: true, Firecracker: a.firecracker})
+	if err != nil {
+		t.Fatalf("open the state folder for jailer mode: %v", err)
+	}
+	ownerUID, _, err := root.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootOwnedBefore := rootOwnedOutsideJail(t, root)
+	auditBefore, err := audit.Verify(audit.Path(root.AuditDir()))
+	if err != nil {
+		t.Fatalf("the audit log is broken before the test: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	fcVersion, err := vmm.BinaryVersion(ctx, a.firecracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := snapshot.Open(ctx, root, fcVersion)
+	if err != nil {
+		t.Fatalf("open the store (run make snapshots as yourself): %v", err)
+	}
+	version, err := store.Current("small")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanJailParents(t, root)
+	// The socket goes outside the state folder, which must not get a
+	// root-owned file.
+	sockDir, err := os.MkdirTemp("", "sandboxd-e2e-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	d, client := startDaemon(t, daemon.Options{
+		StateDir: stateDir, Socket: filepath.Join(sockDir, "sandboxd.sock"), Firecracker: a.firecracker,
+		Jailer: true, JailerBinary: jailerBin, MaxConcurrent: 4,
+	})
+	if d.Mode() != clone.Jailer {
+		t.Fatalf("mode %s, want jailer", d.Mode())
+	}
+
+	// While the three run, look at their Firecrackers: the UID each runs
+	// as, and its cgroup.
+	type demoOut struct {
+		results []*runResult
+		errs    []error
+		wall    time.Duration
+	}
+	done := make(chan demoOut, 1)
+	go func() {
+		results, errs, wall := runDemo1(ctx, client, "2")
+		done <- demoOut{results, errs, wall}
+	}()
+	uids := map[int]string{}
+	deadline := time.Now().Add(20 * time.Second)
+	for len(uids) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("did not see three running jailed clones (saw %v)", uids)
+		}
+		time.Sleep(20 * time.Millisecond)
+		list, err := client.List(ctx, &daemonv1.ListRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		running := 0
+		for _, r := range list.GetRuns() {
+			if r.GetState() == daemonv1.RunState_RUN_STATE_RUNNING {
+				running++
+			}
+		}
+		if running < 3 {
+			continue
+		}
+		for _, r := range list.GetRuns() {
+			cg := filepath.Join(cgroupRoot(t), jailer.ParentCgroup, r.GetRunId())
+			procs, err := os.ReadFile(filepath.Join(cg, "cgroup.procs")) //nolint:gosec // G304: our own clone's cgroup
+			if err != nil {
+				t.Fatalf("run %s has no cgroup of its own: %v", r.GetRunId(), err)
+			}
+			pids := strings.Fields(string(procs))
+			if len(pids) == 0 {
+				t.Fatalf("run %s: its cgroup %s is empty", r.GetRunId(), cg)
+			}
+			pid, _ := strconv.Atoi(pids[0])
+			ids := procStatus(t, pid, "Uid:")
+			uid, _ := strconv.Atoi(ids[0])
+			if uid < jailer.DefaultUID || uid >= jailer.DefaultUID+4 {
+				t.Errorf("run %s: Firecracker runs as UID %v, want one of %d-%d", r.GetRunId(), ids, jailer.DefaultUID, jailer.DefaultUID+3)
+			}
+			if other, ok := uids[uid]; ok && other != r.GetRunId() {
+				t.Errorf("runs %s and %s share the jailed UID %d", other, r.GetRunId(), uid)
+			}
+			uids[uid] = r.GetRunId()
+			t.Logf("run %s: Firecracker pid %d, UID %d, cgroup %s", r.GetRunId(), pid, uid, cg)
+		}
+	}
+	out := <-done
+	checkDemo1(t, out.results, out.errs, out.wall, daemonv1.Mode_MODE_JAILER)
+	checkPsAndLogs(t, client, out.results)
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(ctx, daemon.ShutdownTimeout)
+	defer cancelShutdown()
+	if err := d.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	sum, err := audit.Verify(audit.Path(root.AuditDir()))
+	if err != nil || sum.Records != auditBefore.Records+3 {
+		t.Errorf("audit log: %+v, %v; want %d records in a valid chain", sum, err, auditBefore.Records+3)
+	}
+	checkNothingLeft(t, root, version)
+	for _, r := range out.results {
+		if _, err := os.Stat(filepath.Join(cgroupRoot(t), jailer.ParentCgroup, r.result.GetRunId())); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the cgroup of %s is still there (%v)", r.result.GetRunId(), err)
+		}
+	}
+	// What the root daemon created outside jail/ (the audit log, the
+	// lock) belongs to the state folder's owner, so the user can still
+	// verify the log and run rootless.
+	for _, path := range []string{audit.Path(root.AuditDir()), root.AuditDir(), filepath.Join(root.Dir(), "lock")} {
+		var st syscall.Stat_t
+		if err := syscall.Lstat(path, &st); err != nil || int(st.Uid) != ownerUID {
+			t.Errorf("%s belongs to uid %d (%v), want the state folder's owner %d", path, st.Uid, err, ownerUID)
+		}
+	}
+	for _, path := range rootOwnedOutsideJail(t, root) {
+		if !slices.Contains(rootOwnedBefore, path) {
+			t.Errorf("the test left a root-owned file outside jail/: %s; remove it with: sudo rm -rf %s", path, path)
+		}
+	}
+}
+
+// rootOwnedOutsideJail lists every file and folder under the state folder,
+// outside jail/, that belongs to root.
+func rootOwnedOutsideJail(t *testing.T, root *state.Root) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(root.Dir(), func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root.JailDir() {
+			return filepath.SkipDir
+		}
+		var st syscall.Stat_t
+		if err := syscall.Lstat(path, &st); err != nil {
+			return err
+		}
+		if st.Uid == 0 {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
 }
