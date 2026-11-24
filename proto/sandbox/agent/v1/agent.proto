@@ -33,6 +33,12 @@ service AgentService {
   // Reseed mixes host-supplied random bytes into the guest's random number
   // generator. Clones of one snapshot otherwise share the same RNG state.
   rpc Reseed(ReseedRequest) returns (ReseedResponse);
+
+  // MountScratch mounts the clone's own scratch disk, /dev/vdb, at /work
+  // (ext4, nodev, nosuid). The host calls it once after every restore;
+  // from then on Exec runs in /work unless working_dir says otherwise.
+  // Calling it again is fine: it changes nothing.
+  rpc MountScratch(MountScratchRequest) returns (MountScratchResponse);
 }
 
 // HealthRequest has no fields.
@@ -62,11 +68,13 @@ message ExecRequest {
   // not PATH. Names must match [A-Za-z_][A-Za-z0-9_]*; at most 64 entries.
   map<string, string> env = 2;
 
-  // working_dir is an absolute path in the guest. Empty means "/".
+  // working_dir is an absolute path in the guest. Empty means /work once
+  // MountScratch has mounted the scratch disk there, and "/" before.
   string working_dir = 3;
 
   // stdin is given to the command as its standard input, which is then
-  // closed. Empty means no input.
+  // closed. Empty means no input; at most 960 KiB (1 MiB minus 64 KiB,
+  // so the whole request fits in the agent's 1 MiB message limit).
   bytes stdin = 4;
 
   // timeout_ms is the wall-clock limit in milliseconds. 0 means the default
@@ -127,3 +135,13 @@ message ReseedRequest {
 
 // ReseedResponse has no fields.
 message ReseedResponse {}
+
+// MountScratchRequest says what scratch disk the host attached.
+message MountScratchRequest {
+  // size_bytes is the size of the scratch disk the host attached as
+  // /dev/vdb. The agent refuses to mount a disk of another size.
+  uint64 size_bytes = 1;
+}
+
+// MountScratchResponse has no fields.
+message MountScratchResponse {}

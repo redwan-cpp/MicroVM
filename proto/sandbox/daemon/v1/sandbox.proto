@@ -1,0 +1,307 @@
+// sandbox.proto: the API between sandboxctl (or any other client) and
+// sandboxd, the daemon that restores, runs and destroys microVMs.
+//
+// The daemon is the server and listens on a Unix socket: rootless mode
+// uses $XDG_RUNTIME_DIR/sandboxd/sandboxd.sock, jailer mode
+// /run/sandboxd/sandboxd.sock (ADR-0006). Who may connect is decided by
+// the socket's file permissions; the daemon records the caller's UID with
+// every run.
+//
+// One Run is one command in one fresh clone of a base snapshot. The clone
+// is destroyed afterwards, whatever happens, and one audit record is
+// written for it. docs/learn/11-the-daemon-and-a-run.md explains the life
+// of a run.
+syntax = "proto3";
+
+package sandbox.daemon.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// SandboxService is what sandboxd offers its clients.
+service SandboxService {
+  // Run runs one command in a fresh clone and streams what happens:
+  // every state change, the command's stdout and stderr while it runs,
+  // and then exactly one result, always last. If the caller goes away
+  // (or cancels the call), the run is stopped and its clone destroyed.
+  rpc Run(RunRequest) returns (stream RunResponse);
+
+  // List returns the active runs, and with all set the recent finished
+  // ones too (the last 100, kept in memory until the daemon restarts).
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Logs returns the output the daemon kept of one run.
+  rpc Logs(LogsRequest) returns (LogsResponse);
+
+  // Get returns one run, with all its state changes and its result.
+  rpc Get(GetRequest) returns (GetResponse);
+}
+
+// RunRequest describes one run. Fields this version does not know are
+// rejected (InvalidArgument), never ignored.
+message RunRequest {
+  // argv is the program and its arguments, for example ["echo", "hi"].
+  // There is no shell: to use one, ask for it, as in
+  // ["sh", "-c", "echo hi > /work/note"]. The same rules as the agent's
+  // ExecRequest.argv apply (agent/v1). Must not be empty.
+  repeated string argv = 1;
+
+  // env adds environment variables on top of the guest's clean fixed
+  // environment (PATH, HOME, LANG). The same rules as the agent's
+  // ExecRequest.env: names [A-Za-z_][A-Za-z0-9_]*, PATH may not change,
+  // at most 64 entries. Values are never written to the audit log.
+  map<string, string> env = 2;
+
+  // size_class picks the base snapshot: "small" (1 vCPU, 256 MiB) or
+  // "medium" (2 vCPUs, 512 MiB). Empty means "small".
+  string size_class = 3;
+
+  // timeout_ms is the command's wall-clock limit in milliseconds. 0 means
+  // the default of 30 s; more than 10 minutes is rejected.
+  uint32 timeout_ms = 4;
+
+  // max_output_bytes caps stdout and stderr together. 0 means the default
+  // of 1 MiB; more than 16 MiB is rejected. The daemon keeps at most the
+  // first 1 MiB of a run's output for Logs.
+  uint64 max_output_bytes = 5;
+
+  // stdin is given to the command as its standard input. At most
+  // 960 KiB (1 MiB minus 64 KiB, so the whole request fits in the
+  // daemon's and the agent's 1 MiB message limit). Never written to the
+  // audit log.
+  bytes stdin = 6;
+}
+
+// RunResponse is one event of a run.
+message RunResponse {
+  // event is exactly one of the following.
+  oneof event {
+    // state is a state change. The first one is always PENDING.
+    StateChange state = 1;
+    // stdout is the next chunk of the command's standard output, exactly
+    // as the command wrote it.
+    bytes stdout = 2;
+    // stderr is the next chunk of the command's standard error.
+    bytes stderr = 3;
+    // result is the final event: the run is DONE or FAILED.
+    RunResult result = 4;
+  }
+}
+
+// RunState is where a run is in its life. A run moves forward only:
+// PENDING → RESTORING → MOUNTING → RUNNING → STOPPING → DONE, and from any
+// state before DONE it may fail. Every run ends with STOPPING (its clone
+// is destroyed and its audit record written) and then DONE or FAILED.
+enum RunState {
+  // RUN_STATE_UNSPECIFIED is never sent.
+  RUN_STATE_UNSPECIFIED = 0;
+  // RUN_STATE_PENDING: accepted, waiting for a free slot.
+  RUN_STATE_PENDING = 1;
+  // RUN_STATE_RESTORING: restoring a clone from the base snapshot.
+  RUN_STATE_RESTORING = 2;
+  // RUN_STATE_MOUNTING: mounting the clone's own scratch disk at /work.
+  RUN_STATE_MOUNTING = 3;
+  // RUN_STATE_RUNNING: the command runs.
+  RUN_STATE_RUNNING = 4;
+  // RUN_STATE_STOPPING: destroying the clone and writing the audit
+  // record.
+  RUN_STATE_STOPPING = 5;
+  // RUN_STATE_DONE: the clone is gone and the record written. The
+  // command itself may still have failed: see the result's outcome.
+  RUN_STATE_DONE = 6;
+  // RUN_STATE_FAILED: the run could not be carried out (no clone, a
+  // broken agent, the caller went away, a failed cleanup, ...).
+  RUN_STATE_FAILED = 7;
+}
+
+// StateChange is one step of a run.
+message StateChange {
+  // state is the new state.
+  RunState state = 1;
+  // at is when the run entered it, by the host's clock.
+  google.protobuf.Timestamp at = 2;
+  // detail says why, for example the error that made a run fail. It may
+  // quote text from the guest, with control characters removed.
+  string detail = 3;
+}
+
+// Outcome is how a run ended, as judged by the host. The agent's own
+// claims are never used for it.
+enum Outcome {
+  // OUTCOME_UNSPECIFIED: the run has not ended yet.
+  OUTCOME_UNSPECIFIED = 0;
+  // OUTCOME_EXITED: the command exited by itself (or was killed by a
+  // signal inside the guest); exit_code says how.
+  OUTCOME_EXITED = 1;
+  // OUTCOME_TIMED_OUT: the command ran out of time and was stopped.
+  OUTCOME_TIMED_OUT = 2;
+  // OUTCOME_OUTPUT_TRUNCATED: the output reached max_output_bytes and the
+  // command was stopped.
+  OUTCOME_OUTPUT_TRUNCATED = 3;
+  // OUTCOME_FAILED: the run could not be carried out; error says why.
+  OUTCOME_FAILED = 4;
+}
+
+// Mode says how the clone's Firecracker was confined (ADR-0005).
+enum Mode {
+  // MODE_UNSPECIFIED is never sent.
+  MODE_UNSPECIFIED = 0;
+  // MODE_ROOTLESS: Firecracker ran as the daemon's own user, with its
+  // seccomp filters and nothing else around it.
+  MODE_ROOTLESS = 1;
+  // MODE_JAILER: Firecracker ran in a jailer chroot, as an unprivileged
+  // UID of its own, in its own cgroup.
+  MODE_JAILER = 2;
+}
+
+// RunResult is how a run ended.
+message RunResult {
+  // run_id names the run, for example "r-0123456789abcdef".
+  string run_id = 1;
+  // outcome is the host's verdict.
+  Outcome outcome = 2;
+  // exited is true only for OUTCOME_EXITED. Only then does exit_code
+  // mean anything.
+  bool exited = 3;
+  // exit_code is the command's exit status (0 to 255), or -1 if a signal
+  // killed it (then signal says which).
+  int32 exit_code = 4;
+  // signal is the signal that killed the command, or 0.
+  int32 signal = 5;
+  // timed_out is true if the command ran out of time, by the host's
+  // clock.
+  bool timed_out = 6;
+  // output_truncated is true if the output reached max_output_bytes.
+  bool output_truncated = 7;
+  // output_bytes is how much stdout and stderr the host passed on.
+  uint64 output_bytes = 8;
+  // mode is how the clone was confined. Every result says so, because
+  // the timings differ between the modes.
+  Mode mode = 9;
+  // timings is how long each phase took.
+  Timings timings = 10;
+  // error says what went wrong when the outcome is OUTCOME_FAILED, or
+  // when cleaning up failed. It may quote text from the guest, with
+  // control characters removed.
+  string error = 11;
+}
+
+// Timings are the phases of one run, in microseconds, measured on the
+// host.
+message Timings {
+  // queued_us is the time spent PENDING, waiting for a free slot.
+  uint64 queued_us = 1;
+  // prepare_us is making the clone's folder: hard links to the
+  // snapshot's files.
+  uint64 prepare_us = 2;
+  // scratch_us is copying the scratch disk template into the clone's
+  // folder.
+  uint64 scratch_us = 3;
+  // process_start_us is starting Firecracker until its API answers.
+  uint64 process_start_us = 4;
+  // load_snapshot_us is loading the snapshot and resuming the VM.
+  uint64 load_snapshot_us = 5;
+  // agent_ready_us is from the end of the load to the agent's first
+  // answer.
+  uint64 agent_ready_us = 6;
+  // de_twin_us is setting the guest clock and reseeding its RNG.
+  uint64 de_twin_us = 7;
+  // restore_us is the whole restore: prepare_us to de_twin_us.
+  uint64 restore_us = 8;
+  // mount_us is mounting the scratch disk at /work.
+  uint64 mount_us = 9;
+  // exec_us is running the command.
+  uint64 exec_us = 10;
+  // destroy_us is destroying the clone.
+  uint64 destroy_us = 11;
+  // total_us is from the request's arrival to the end of STOPPING.
+  uint64 total_us = 12;
+}
+
+// ListRequest says which runs to list.
+message ListRequest {
+  // all adds the recent finished runs to the active ones.
+  bool all = 1;
+}
+
+// ListResponse lists runs, oldest first.
+message ListResponse {
+  // runs are the runs.
+  repeated RunInfo runs = 1;
+}
+
+// RunInfo describes one run, active or finished.
+message RunInfo {
+  // run_id names the run.
+  string run_id = 1;
+  // state is where the run is now.
+  RunState state = 2;
+  // size_class is the class the run asked for.
+  string size_class = 3;
+  // mode is the daemon's mode.
+  Mode mode = 4;
+  // argv is the command.
+  repeated string argv = 5;
+  // caller_uid is the UID of the process that asked for the run, from
+  // the socket (SO_PEERCRED), not from anything the caller said.
+  uint32 caller_uid = 6;
+  // created_at is when the daemon accepted the run.
+  google.protobuf.Timestamp created_at = 7;
+  // transitions are all state changes so far, oldest first.
+  repeated StateChange transitions = 8;
+  // result is set once the run is DONE or FAILED.
+  RunResult result = 9;
+}
+
+// LogsRequest names one run.
+message LogsRequest {
+  // run_id names the run.
+  string run_id = 1;
+}
+
+// LogsResponse is the output the daemon kept of one run: at most the
+// first 1 MiB of what the host passed on, in the order it arrived. To
+// bound its memory, the daemon also drops the output of its oldest runs
+// first (keeping their other details) when all runs together keep more
+// than 64 MiB. Nothing survives a daemon restart.
+message LogsResponse {
+  // run_id names the run.
+  string run_id = 1;
+  // chunks are the output, in order.
+  repeated OutputChunk chunks = 2;
+  // output_bytes is how much output the host passed on in all.
+  uint64 output_bytes = 3;
+  // kept_bytes is how much of it is in chunks.
+  uint64 kept_bytes = 4;
+  // output_truncated is true if the run itself hit max_output_bytes.
+  bool output_truncated = 5;
+  // cut is true if the run had more than the 1 MiB the daemon keeps.
+  bool cut = 6;
+  // dropped is true if the output was dropped to stay within the
+  // daemon's 64 MiB budget.
+  bool dropped = 7;
+  // finished is true if the run has ended, so no more output will come.
+  bool finished = 8;
+}
+
+// OutputChunk is one piece of a run's output.
+message OutputChunk {
+  // data is exactly one of the following.
+  oneof data {
+    // stdout is a chunk of standard output.
+    bytes stdout = 1;
+    // stderr is a chunk of standard error.
+    bytes stderr = 2;
+  }
+}
+
+// GetRequest names one run.
+message GetRequest {
+  // run_id names the run.
+  string run_id = 1;
+}
+
+// GetResponse describes one run.
+message GetResponse {
+  // run is the run.
+  RunInfo run = 1;
+}
