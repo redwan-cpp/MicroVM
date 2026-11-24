@@ -33,10 +33,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_Health_FullMethodName   = "/sandbox.agent.v1.AgentService/Health"
-	AgentService_Exec_FullMethodName     = "/sandbox.agent.v1.AgentService/Exec"
-	AgentService_SyncTime_FullMethodName = "/sandbox.agent.v1.AgentService/SyncTime"
-	AgentService_Reseed_FullMethodName   = "/sandbox.agent.v1.AgentService/Reseed"
+	AgentService_Health_FullMethodName       = "/sandbox.agent.v1.AgentService/Health"
+	AgentService_Exec_FullMethodName         = "/sandbox.agent.v1.AgentService/Exec"
+	AgentService_SyncTime_FullMethodName     = "/sandbox.agent.v1.AgentService/SyncTime"
+	AgentService_Reseed_FullMethodName       = "/sandbox.agent.v1.AgentService/Reseed"
+	AgentService_MountScratch_FullMethodName = "/sandbox.agent.v1.AgentService/MountScratch"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -58,6 +59,11 @@ type AgentServiceClient interface {
 	// Reseed mixes host-supplied random bytes into the guest's random number
 	// generator. Clones of one snapshot otherwise share the same RNG state.
 	Reseed(ctx context.Context, in *ReseedRequest, opts ...grpc.CallOption) (*ReseedResponse, error)
+	// MountScratch mounts the clone's own scratch disk, /dev/vdb, at /work
+	// (ext4, nodev, nosuid). The host calls it once after every restore;
+	// from then on Exec runs in /work unless working_dir says otherwise.
+	// Calling it again is fine: it changes nothing.
+	MountScratch(ctx context.Context, in *MountScratchRequest, opts ...grpc.CallOption) (*MountScratchResponse, error)
 }
 
 type agentServiceClient struct {
@@ -117,6 +123,16 @@ func (c *agentServiceClient) Reseed(ctx context.Context, in *ReseedRequest, opts
 	return out, nil
 }
 
+func (c *agentServiceClient) MountScratch(ctx context.Context, in *MountScratchRequest, opts ...grpc.CallOption) (*MountScratchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MountScratchResponse)
+	err := c.cc.Invoke(ctx, AgentService_MountScratch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -136,6 +152,11 @@ type AgentServiceServer interface {
 	// Reseed mixes host-supplied random bytes into the guest's random number
 	// generator. Clones of one snapshot otherwise share the same RNG state.
 	Reseed(context.Context, *ReseedRequest) (*ReseedResponse, error)
+	// MountScratch mounts the clone's own scratch disk, /dev/vdb, at /work
+	// (ext4, nodev, nosuid). The host calls it once after every restore;
+	// from then on Exec runs in /work unless working_dir says otherwise.
+	// Calling it again is fine: it changes nothing.
+	MountScratch(context.Context, *MountScratchRequest) (*MountScratchResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -157,6 +178,9 @@ func (UnimplementedAgentServiceServer) SyncTime(context.Context, *SyncTimeReques
 }
 func (UnimplementedAgentServiceServer) Reseed(context.Context, *ReseedRequest) (*ReseedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Reseed not implemented")
+}
+func (UnimplementedAgentServiceServer) MountScratch(context.Context, *MountScratchRequest) (*MountScratchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MountScratch not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -244,6 +268,24 @@ func _AgentService_Reseed_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_MountScratch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MountScratchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).MountScratch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_MountScratch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).MountScratch(ctx, req.(*MountScratchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -262,6 +304,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Reseed",
 			Handler:    _AgentService_Reseed_Handler,
+		},
+		{
+			MethodName: "MountScratch",
+			Handler:    _AgentService_MountScratch_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

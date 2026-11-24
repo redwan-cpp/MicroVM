@@ -142,10 +142,12 @@ type ExecRequest struct {
 	// above), HOME=/root and LANG=C.UTF-8. env may override HOME and LANG but
 	// not PATH. Names must match [A-Za-z_][A-Za-z0-9_]*; at most 64 entries.
 	Env map[string]string `protobuf:"bytes,2,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// working_dir is an absolute path in the guest. Empty means "/".
+	// working_dir is an absolute path in the guest. Empty means /work once
+	// MountScratch has mounted the scratch disk there, and "/" before.
 	WorkingDir string `protobuf:"bytes,3,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
 	// stdin is given to the command as its standard input, which is then
-	// closed. Empty means no input.
+	// closed. Empty means no input; at most 960 KiB (1 MiB minus 64 KiB,
+	// so the whole request fits in the agent's 1 MiB message limit).
 	Stdin []byte `protobuf:"bytes,4,opt,name=stdin,proto3" json:"stdin,omitempty"`
 	// timeout_ms is the wall-clock limit in milliseconds. 0 means the default
 	// of 30 s; more than 10 minutes is rejected. When it runs out, the agent
@@ -586,6 +588,90 @@ func (*ReseedResponse) Descriptor() ([]byte, []int) {
 	return file_sandbox_agent_v1_agent_proto_rawDescGZIP(), []int{8}
 }
 
+// MountScratchRequest says what scratch disk the host attached.
+type MountScratchRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// size_bytes is the size of the scratch disk the host attached as
+	// /dev/vdb. The agent refuses to mount a disk of another size.
+	SizeBytes     uint64 `protobuf:"varint,1,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MountScratchRequest) Reset() {
+	*x = MountScratchRequest{}
+	mi := &file_sandbox_agent_v1_agent_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MountScratchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MountScratchRequest) ProtoMessage() {}
+
+func (x *MountScratchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_agent_v1_agent_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MountScratchRequest.ProtoReflect.Descriptor instead.
+func (*MountScratchRequest) Descriptor() ([]byte, []int) {
+	return file_sandbox_agent_v1_agent_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *MountScratchRequest) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+// MountScratchResponse has no fields.
+type MountScratchResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MountScratchResponse) Reset() {
+	*x = MountScratchResponse{}
+	mi := &file_sandbox_agent_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MountScratchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MountScratchResponse) ProtoMessage() {}
+
+func (x *MountScratchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_agent_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MountScratchResponse.ProtoReflect.Descriptor instead.
+func (*MountScratchResponse) Descriptor() ([]byte, []int) {
+	return file_sandbox_agent_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
 var File_sandbox_agent_v1_agent_proto protoreflect.FileDescriptor
 
 const file_sandbox_agent_v1_agent_proto_rawDesc = "" +
@@ -626,12 +712,17 @@ const file_sandbox_agent_v1_agent_proto_rawDesc = "" +
 	"\x10SyncTimeResponse\")\n" +
 	"\rReseedRequest\x12\x18\n" +
 	"\aentropy\x18\x01 \x01(\fR\aentropy\"\x10\n" +
-	"\x0eReseedResponse2\xc4\x02\n" +
+	"\x0eReseedResponse\"4\n" +
+	"\x13MountScratchRequest\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x01 \x01(\x04R\tsizeBytes\"\x16\n" +
+	"\x14MountScratchResponse2\xa3\x03\n" +
 	"\fAgentService\x12K\n" +
 	"\x06Health\x12\x1f.sandbox.agent.v1.HealthRequest\x1a .sandbox.agent.v1.HealthResponse\x12G\n" +
 	"\x04Exec\x12\x1d.sandbox.agent.v1.ExecRequest\x1a\x1e.sandbox.agent.v1.ExecResponse0\x01\x12Q\n" +
 	"\bSyncTime\x12!.sandbox.agent.v1.SyncTimeRequest\x1a\".sandbox.agent.v1.SyncTimeResponse\x12K\n" +
-	"\x06Reseed\x12\x1f.sandbox.agent.v1.ReseedRequest\x1a .sandbox.agent.v1.ReseedResponseB\xc9\x01\n" +
+	"\x06Reseed\x12\x1f.sandbox.agent.v1.ReseedRequest\x1a .sandbox.agent.v1.ReseedResponse\x12]\n" +
+	"\fMountScratch\x12%.sandbox.agent.v1.MountScratchRequest\x1a&.sandbox.agent.v1.MountScratchResponseB\xc9\x01\n" +
 	"\x14com.sandbox.agent.v1B\n" +
 	"AgentProtoP\x01ZCgithub.com/redwan-cpp/MicroVM/internal/gen/sandbox/agent/v1;agentv1\xa2\x02\x03SAX\xaa\x02\x10Sandbox.Agent.V1\xca\x02\x10Sandbox\\Agent\\V1\xe2\x02\x1cSandbox\\Agent\\V1\\GPBMetadata\xea\x02\x12Sandbox::Agent::V1b\x06proto3"
 
@@ -647,35 +738,39 @@ func file_sandbox_agent_v1_agent_proto_rawDescGZIP() []byte {
 	return file_sandbox_agent_v1_agent_proto_rawDescData
 }
 
-var file_sandbox_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_sandbox_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_sandbox_agent_v1_agent_proto_goTypes = []any{
-	(*HealthRequest)(nil),    // 0: sandbox.agent.v1.HealthRequest
-	(*HealthResponse)(nil),   // 1: sandbox.agent.v1.HealthResponse
-	(*ExecRequest)(nil),      // 2: sandbox.agent.v1.ExecRequest
-	(*ExecResponse)(nil),     // 3: sandbox.agent.v1.ExecResponse
-	(*ExitStatus)(nil),       // 4: sandbox.agent.v1.ExitStatus
-	(*SyncTimeRequest)(nil),  // 5: sandbox.agent.v1.SyncTimeRequest
-	(*SyncTimeResponse)(nil), // 6: sandbox.agent.v1.SyncTimeResponse
-	(*ReseedRequest)(nil),    // 7: sandbox.agent.v1.ReseedRequest
-	(*ReseedResponse)(nil),   // 8: sandbox.agent.v1.ReseedResponse
-	nil,                      // 9: sandbox.agent.v1.ExecRequest.EnvEntry
+	(*HealthRequest)(nil),        // 0: sandbox.agent.v1.HealthRequest
+	(*HealthResponse)(nil),       // 1: sandbox.agent.v1.HealthResponse
+	(*ExecRequest)(nil),          // 2: sandbox.agent.v1.ExecRequest
+	(*ExecResponse)(nil),         // 3: sandbox.agent.v1.ExecResponse
+	(*ExitStatus)(nil),           // 4: sandbox.agent.v1.ExitStatus
+	(*SyncTimeRequest)(nil),      // 5: sandbox.agent.v1.SyncTimeRequest
+	(*SyncTimeResponse)(nil),     // 6: sandbox.agent.v1.SyncTimeResponse
+	(*ReseedRequest)(nil),        // 7: sandbox.agent.v1.ReseedRequest
+	(*ReseedResponse)(nil),       // 8: sandbox.agent.v1.ReseedResponse
+	(*MountScratchRequest)(nil),  // 9: sandbox.agent.v1.MountScratchRequest
+	(*MountScratchResponse)(nil), // 10: sandbox.agent.v1.MountScratchResponse
+	nil,                          // 11: sandbox.agent.v1.ExecRequest.EnvEntry
 }
 var file_sandbox_agent_v1_agent_proto_depIdxs = []int32{
-	9, // 0: sandbox.agent.v1.ExecRequest.env:type_name -> sandbox.agent.v1.ExecRequest.EnvEntry
-	4, // 1: sandbox.agent.v1.ExecResponse.exit:type_name -> sandbox.agent.v1.ExitStatus
-	0, // 2: sandbox.agent.v1.AgentService.Health:input_type -> sandbox.agent.v1.HealthRequest
-	2, // 3: sandbox.agent.v1.AgentService.Exec:input_type -> sandbox.agent.v1.ExecRequest
-	5, // 4: sandbox.agent.v1.AgentService.SyncTime:input_type -> sandbox.agent.v1.SyncTimeRequest
-	7, // 5: sandbox.agent.v1.AgentService.Reseed:input_type -> sandbox.agent.v1.ReseedRequest
-	1, // 6: sandbox.agent.v1.AgentService.Health:output_type -> sandbox.agent.v1.HealthResponse
-	3, // 7: sandbox.agent.v1.AgentService.Exec:output_type -> sandbox.agent.v1.ExecResponse
-	6, // 8: sandbox.agent.v1.AgentService.SyncTime:output_type -> sandbox.agent.v1.SyncTimeResponse
-	8, // 9: sandbox.agent.v1.AgentService.Reseed:output_type -> sandbox.agent.v1.ReseedResponse
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	11, // 0: sandbox.agent.v1.ExecRequest.env:type_name -> sandbox.agent.v1.ExecRequest.EnvEntry
+	4,  // 1: sandbox.agent.v1.ExecResponse.exit:type_name -> sandbox.agent.v1.ExitStatus
+	0,  // 2: sandbox.agent.v1.AgentService.Health:input_type -> sandbox.agent.v1.HealthRequest
+	2,  // 3: sandbox.agent.v1.AgentService.Exec:input_type -> sandbox.agent.v1.ExecRequest
+	5,  // 4: sandbox.agent.v1.AgentService.SyncTime:input_type -> sandbox.agent.v1.SyncTimeRequest
+	7,  // 5: sandbox.agent.v1.AgentService.Reseed:input_type -> sandbox.agent.v1.ReseedRequest
+	9,  // 6: sandbox.agent.v1.AgentService.MountScratch:input_type -> sandbox.agent.v1.MountScratchRequest
+	1,  // 7: sandbox.agent.v1.AgentService.Health:output_type -> sandbox.agent.v1.HealthResponse
+	3,  // 8: sandbox.agent.v1.AgentService.Exec:output_type -> sandbox.agent.v1.ExecResponse
+	6,  // 9: sandbox.agent.v1.AgentService.SyncTime:output_type -> sandbox.agent.v1.SyncTimeResponse
+	8,  // 10: sandbox.agent.v1.AgentService.Reseed:output_type -> sandbox.agent.v1.ReseedResponse
+	10, // 11: sandbox.agent.v1.AgentService.MountScratch:output_type -> sandbox.agent.v1.MountScratchResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_sandbox_agent_v1_agent_proto_init() }
@@ -694,7 +789,7 @@ func file_sandbox_agent_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sandbox_agent_v1_agent_proto_rawDesc), len(file_sandbox_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
