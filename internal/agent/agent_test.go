@@ -463,3 +463,108 @@ func waitUntilGone(t *testing.T, pid int) {
 	t.Errorf("process %d is still running", pid)
 	_ = unix.Kill(pid, unix.SIGKILL)
 }
+
+// fakeScratch "mounts" by remembering the size; its folder is a test
+// folder on the host.
+type fakeScratch struct {
+	dir    string
+	mounts []uint64
+	err    error
+}
+
+func (s *fakeScratch) Mount(size uint64) error {
+	s.mounts = append(s.mounts, size)
+	return s.err
+}
+
+func (s *fakeScratch) Dir() string { return s.dir }
+
+func TestMountScratch(t *testing.T) {
+	scratch := &fakeScratch{dir: t.TempDir()}
+	client := newClient(t, agent.NewServer(agent.Config{Clock: &fakeClock{}, Entropy: &fakeEntropy{}, Scratch: scratch}))
+
+	// Before MountScratch, a command runs in "/".
+	if got := mustExecute(t, client, &agentv1.ExecRequest{Argv: []string{"pwd"}}).stdout.String(); got != "/\n" {
+		t.Errorf("pwd before MountScratch = %q, want /", got)
+	}
+
+	if _, err := client.MountScratch(t.Context(), &agentv1.MountScratchRequest{SizeBytes: 0}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("MountScratch(0 bytes): %v, want InvalidArgument", err)
+	}
+	for range 2 { // the second call changes nothing
+		if _, err := client.MountScratch(t.Context(), &agentv1.MountScratchRequest{SizeBytes: 64 << 20}); err != nil {
+			t.Fatalf("MountScratch: %v", err)
+		}
+	}
+	if !slices.Equal(scratch.mounts, []uint64{64 << 20}) {
+		t.Errorf("mounted %v, want exactly once with 64 MiB", scratch.mounts)
+	}
+	if _, err := client.MountScratch(t.Context(), &agentv1.MountScratchRequest{SizeBytes: 128 << 20}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("MountScratch with another size: %v, want FailedPrecondition", err)
+	}
+
+	// Now the scratch disk is the default working folder; an explicit one
+	// still wins.
+	if got := mustExecute(t, client, &agentv1.ExecRequest{Argv: []string{"pwd"}}).stdout.String(); got != scratch.dir+"\n" {
+		t.Errorf("pwd after MountScratch = %q, want %s", got, scratch.dir)
+	}
+	if got := mustExecute(t, client, &agentv1.ExecRequest{Argv: []string{"pwd"}, WorkingDir: "/"}).stdout.String(); got != "/\n" {
+		t.Errorf("pwd with working_dir / = %q, want /", got)
+	}
+}
+
+func TestMountScratchFailureIsReported(t *testing.T) {
+	scratch := &fakeScratch{dir: t.TempDir(), err: errors.New("no /dev/vdb")}
+	client := newClient(t, agent.NewServer(agent.Config{Scratch: scratch}))
+	_, err := client.MountScratch(t.Context(), &agentv1.MountScratchRequest{SizeBytes: 1 << 20})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "no /dev/vdb") {
+		t.Errorf("MountScratch = %v, want FailedPrecondition with the reason", err)
+	}
+	// A failed mount leaves the default folder alone, and may be retried.
+	if got := mustExecute(t, client, &agentv1.ExecRequest{Argv: []string{"pwd"}}).stdout.String(); got != "/\n" {
+		t.Errorf("pwd after a failed MountScratch = %q, want /", got)
+	}
+	scratch.err = nil
+	if _, err := client.MountScratch(t.Context(), &agentv1.MountScratchRequest{SizeBytes: 1 << 20}); err != nil {
+		t.Errorf("MountScratch after a failure: %v", err)
+	}
+}
+
+func TestCheckExecRequest(t *testing.T) {
+	if err := agent.CheckExecRequest(&agentv1.ExecRequest{Argv: []string{"echo", "hi"}, Env: map[string]string{"A": "b"},
+		Stdin: make([]byte, agent.MaxStdin)}); err != nil {
+		t.Errorf("a valid request: %v", err)
+	}
+	// The host cannot look for programs in the guest, so an unknown one
+	// passes here; the agent then answers NotFound.
+	if err := agent.CheckExecRequest(&agentv1.ExecRequest{Argv: []string{"no-such-program-anywhere"}}); err != nil {
+		t.Errorf("an unknown program: %v, want nil", err)
+	}
+	for name, req := range map[string]*agentv1.ExecRequest{
+		"empty argv":    {},
+		"NUL in argv":   {Argv: []string{"a\x00"}},
+		"PATH in env":   {Argv: []string{"true"}, Env: map[string]string{"PATH": "/"}},
+		"bad env name":  {Argv: []string{"true"}, Env: map[string]string{"A B": "c"}},
+		"stdin too big": {Argv: []string{"true"}, Stdin: make([]byte, agent.MaxStdin+1)},
+		"long timeout":  {Argv: []string{"true"}, TimeoutMs: 10*60*1000 + 1},
+	} {
+		if err := agent.CheckExecRequest(req); err == nil {
+			t.Errorf("%s: CheckExecRequest accepted it", name)
+		}
+	}
+	// The largest stdin plus argv and env fits in one request message.
+	if agent.MaxStdin+64<<10 != agent.MaxRequestSize {
+		t.Errorf("MaxStdin %d leaves %d bytes of the %d-byte message for the rest, want 64 KiB",
+			agent.MaxStdin, agent.MaxRequestSize-agent.MaxStdin, agent.MaxRequestSize)
+	}
+}
+
+func TestExecAcceptsTheLargestStdin(t *testing.T) {
+	stdin := bytes.Repeat([]byte("x"), agent.MaxStdin)
+	res := mustExecute(t, newAgent(t), &agentv1.ExecRequest{
+		Argv: []string{"wc", "-c"}, Stdin: stdin, Env: map[string]string{"A": strings.Repeat("y", 1000)},
+	})
+	if got := strings.TrimSpace(res.stdout.String()); got != strconv.Itoa(agent.MaxStdin) {
+		t.Errorf("wc -c = %q, want %d", got, agent.MaxStdin)
+	}
+}

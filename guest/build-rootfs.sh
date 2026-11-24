@@ -6,7 +6,8 @@
 # shows it to the guest as /dev/vda. We fill it with Alpine Linux's
 # "minirootfs": a 3.7 MB tarball with a shell and basic tools, and nothing
 # that starts on its own. On top go our init script and sandbox-agent
-# (bin/sandbox-agent from `make build`; `make guest` builds it first).
+# (bin/sandbox-agent from `make build`; `make guest` builds it first), and
+# the empty folder /work, where each clone's scratch disk is mounted.
 #
 # Rootless: no sudo. Files in a Linux root filesystem must belong to root
 # (uid 0). We get that without being root by running the build inside a
@@ -62,6 +63,9 @@ unshare --map-root-user --map-auto -- bash -euo pipefail -c '
   tar -xzf "${tarball}" -C "${stage}" --numeric-owner
   install -m 0755 -o 0 -g 0 "${init}" "${stage}/sbin/demo-init"
   install -D -m 0755 -o 0 -g 0 "${agent}" "${stage}/usr/local/bin/sandbox-agent"
+  # The mount point of each clone'"'"'s own scratch disk (the agent mounts it;
+  # the root disk itself is read-only).
+  install -d -m 0755 -o 0 -g 0 "${stage}/work"
   echo microvm > "${stage}/etc/hostname"
   mkfs.ext4 -q -F -L rootfs -d "${stage}" "${image}" "${size}"
 ' _ "${CACHE}/${TARBALL}" "${STAGE}" "${INIT}" "${AGENT}" "${DEST}.tmp" "${IMAGE_SIZE}"

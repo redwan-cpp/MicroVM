@@ -170,6 +170,18 @@ func (c *Client) Reseed(ctx context.Context, entropy []byte) error {
 	return nil
 }
 
+// MountScratch asks the agent to mount the clone's scratch disk at /work.
+// sizeBytes is the size of the disk the host attached; the agent refuses
+// a /dev/vdb of another size. Calling it again changes nothing.
+func (c *Client) MountScratch(ctx context.Context, sizeBytes uint64) error {
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	if _, err := c.api.MountScratch(ctx, &agentv1.MountScratchRequest{SizeBytes: sizeBytes}); err != nil {
+		return fmt.Errorf("agentclient: mount scratch: %w", err)
+	}
+	return nil
+}
+
 // ErrNoDeadline is returned by Exec when its context has no deadline.
 var ErrNoDeadline = errors.New("agentclient: Exec needs a context with a deadline")
 

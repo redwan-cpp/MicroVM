@@ -47,6 +47,9 @@ type BuildConfig struct {
 	// keeps a hard link to it, so it must be on the state folder's
 	// filesystem.
 	Rootfs string
+	// Mkfs is the mkfs.ext4 program that makes the scratch template.
+	// Empty means FindMkfs.
+	Mkfs string
 }
 
 // BuildResult describes a finished build.
@@ -72,7 +75,9 @@ type BuildResult struct {
 //     then close the host's connection: no connection may be frozen into
 //     the snapshot.
 //  4. Pause the VM and write vm.snap and mem.snap; stop it.
-//  5. Hash every file, make them 0444, write manifest.json, and point
+//  5. Make the formatted scratch template (scratch.ext4), the same size
+//     as the snapshot's placeholder disk: every clone gets a copy of it.
+//  6. Hash every file, make them 0444, write manifest.json, and point
 //     "current" at the new version.
 func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) (_ *BuildResult, err error) {
 	began := time.Now()
@@ -84,6 +89,11 @@ func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) 
 	// point into it.
 	if cfg.Kernel, err = filepath.Abs(cfg.Kernel); err != nil {
 		return nil, fmt.Errorf("snapshot: %w", err)
+	}
+	if cfg.Mkfs == "" {
+		if cfg.Mkfs, err = FindMkfs(); err != nil {
+			return nil, err
+		}
 	}
 
 	classDir := filepath.Join(root.SnapshotsDir(), class.Name)
@@ -110,6 +120,9 @@ func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) 
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: build %s: %w", class.Name, err)
 	}
+	if err := makeScratchTemplate(ctx, cfg.Mkfs, filepath.Join(tmp, ScratchName), class.ScratchMiB); err != nil {
+		return nil, err
+	}
 
 	m := &Manifest{
 		Format:             ManifestFormat,
@@ -130,6 +143,7 @@ func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) 
 		{filepath.Join(tmp, RootfsName), &m.RootfsSHA256},
 		{filepath.Join(tmp, StateName), &m.StateSHA256},
 		{filepath.Join(tmp, MemName), &m.MemSHA256},
+		{filepath.Join(tmp, ScratchName), &m.ScratchSHA256},
 	} {
 		if *h.sum, err = hashFile(ctx, h.path); err != nil {
 			return nil, err
@@ -138,7 +152,7 @@ func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) 
 	// chmod on the root disk's hard link also makes guest/out/rootfs.ext4
 	// read-only: it is the same file (inode). That is harmless, because
 	// `make guest` replaces that file instead of writing into it.
-	for _, name := range []string{RootfsName, StateName, MemName} {
+	for _, name := range []string{RootfsName, StateName, MemName, ScratchName} {
 		if err := os.Chmod(filepath.Join(tmp, name), storeFileMode); err != nil {
 			return nil, fmt.Errorf("snapshot: %w", err)
 		}

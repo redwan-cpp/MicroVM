@@ -67,7 +67,7 @@ type command struct {
 //     it left running in the background may outlive it.
 //  6. Send exactly one exit event, always last.
 func (s *Server) Exec(req *agentv1.ExecRequest, stream agentv1.AgentService_ExecServer) error {
-	c, err := parseExecRequest(req)
+	c, err := parseExecRequest(req, s.workingDir())
 	if err != nil {
 		return err
 	}
@@ -149,51 +149,65 @@ func (s *Server) Exec(req *agentv1.ExecRequest, stream agentv1.AgentService_Exec
 }
 
 // parseExecRequest checks a request against the rules in agent.proto and
-// turns it into a command. Every error is a gRPC status error.
-func parseExecRequest(req *agentv1.ExecRequest) (*command, error) {
-	invalid := func(format string, args ...any) error {
-		return status.Errorf(codes.InvalidArgument, format, args...)
+// turns it into a command; defaultDir is the working folder if the
+// request names none. Every error is a gRPC status error.
+func parseExecRequest(req *agentv1.ExecRequest, defaultDir string) (*command, error) {
+	c, err := checkExecRequest(req, defaultDir)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if c.path, err = lookPath(c.argv[0], filepath.SplitList(FixedPath)); err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	return c, nil
+}
 
+// CheckExecRequest checks req against every rule in agent.proto that does
+// not depend on the guest (it cannot look for the program): argv, env,
+// working_dir, stdin and the limits. sandboxd checks each run with it
+// before it restores a clone, so the daemon and the agent always agree on
+// which requests are valid.
+func CheckExecRequest(req *agentv1.ExecRequest) error {
+	_, err := checkExecRequest(req, "/")
+	return err
+}
+
+// checkExecRequest is CheckExecRequest, returning the command without its
+// program path.
+func checkExecRequest(req *agentv1.ExecRequest, defaultDir string) (*command, error) {
 	argv := req.GetArgv()
 	if len(argv) == 0 || argv[0] == "" {
-		return nil, invalid("argv must not be empty")
+		return nil, errors.New("argv must not be empty")
 	}
 	for i, arg := range argv {
 		if strings.ContainsRune(arg, 0) {
-			return nil, invalid("argv[%d] contains a NUL byte", i)
+			return nil, fmt.Errorf("argv[%d] contains a NUL byte", i)
 		}
 	}
 
 	timeout, maxOutput, err := ExecLimits(req.GetTimeoutMs(), req.GetMaxOutputBytes())
 	if err != nil {
-		return nil, invalid("%v", err)
+		return nil, err
 	}
 
 	env, err := buildEnv(req.GetEnv())
 	if err != nil {
-		return nil, invalid("%v", err)
+		return nil, err
 	}
 
 	dir := req.GetWorkingDir()
 	if dir == "" {
-		dir = "/"
+		dir = defaultDir
 	}
 	if !filepath.IsAbs(dir) || strings.ContainsRune(dir, 0) {
-		return nil, invalid("working_dir %q must be an absolute path", dir)
+		return nil, fmt.Errorf("working_dir %q must be an absolute path", dir)
 	}
 
 	if len(req.GetStdin()) > MaxStdin {
-		return nil, invalid("stdin is %d bytes; at most %d allowed", len(req.GetStdin()), MaxStdin)
-	}
-
-	path, err := lookPath(argv[0], filepath.SplitList(FixedPath))
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, fmt.Errorf("stdin is %d bytes; at most %d allowed", len(req.GetStdin()), MaxStdin)
 	}
 
 	return &command{
-		path:      path,
 		argv:      argv,
 		env:       env,
 		dir:       dir,

@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -27,7 +28,9 @@ const clockGap = 3 * time.Second
 // (the real layout, under guest/out/), restores two clones from it one
 // after the other in rootless mode, and checks each: the agent answers,
 // de-twinning worked (the clock is right; the two clones' random numbers
-// differ), the files are hard links, and Destroy leaves nothing behind.
+// differ), the files are hard links, its own scratch disk mounts at /work
+// with nothing of the previous clone on it, and Destroy leaves nothing
+// behind.
 // It logs every restore phase next to the cold boot of the build VM.
 func TestRestoreFromSnapshot(t *testing.T) {
 	a := findArtifacts(t)
@@ -99,6 +102,20 @@ func TestRestoreFromSnapshot(t *testing.T) {
 		}
 		if res.Mode != clone.Rootless {
 			t.Errorf("exec result mode %q, want rootless", res.Mode)
+		}
+
+		// The clone's own scratch disk, mounted at /work: commands run
+		// there, and the second clone does not see the first one's file.
+		mountCtx, cancelMount := context.WithTimeout(ctx, 2*time.Second)
+		err = c.MountScratch(mountCtx)
+		cancelMount()
+		if err != nil {
+			t.Fatalf("MountScratch: %v\nconsole:\n%s", err, c.ConsoleTail(4096))
+		}
+		_, out = cloneExec(t, c, "sh", "-c", fmt.Sprintf("pwd; echo %d > clone-%d; ls; grep -w /work /proc/mounts", i+1, i+1))
+		want := fmt.Sprintf("/work\nclone-%d\nlost+found\n/dev/vdb /work ext4 rw,nosuid,nodev", i+1)
+		if !strings.HasPrefix(out, want) {
+			t.Errorf("restore %d, /work: %q, want it to start with %q", i+1, out, want)
 		}
 
 		// SyncTime landed: the guest clock is within 2 s of the host's,

@@ -1,7 +1,7 @@
 // Package agent is the service inside every microVM: the code behind the
 // sandbox-agent program (cmd/sandbox-agent). It implements the AgentService
-// gRPC API from proto/sandbox/agent/v1/agent.proto: Health, Exec, SyncTime
-// and Reseed.
+// gRPC API from proto/sandbox/agent/v1/agent.proto: Health, Exec, SyncTime,
+// Reseed and MountScratch.
 //
 // The agent runs as root inside the guest, next to the untrusted code it
 // starts. It does its best to keep that code inside the limits (timeout,
@@ -13,6 +13,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -31,6 +32,9 @@ type Config struct {
 	Clock Clock
 	// Entropy feeds the guest RNG for Reseed. nil means KernelEntropy.
 	Entropy Entropy
+	// Scratch mounts the scratch disk for MountScratch. nil means
+	// KernelScratch.
+	Scratch Scratch
 }
 
 // Server implements agentv1.AgentServiceServer. Create it with NewServer
@@ -44,7 +48,11 @@ type Server struct {
 	version string
 	clock   Clock
 	entropy Entropy
+	scratch Scratch
 	started time.Time
+
+	mu          sync.Mutex
+	scratchSize uint64 // the mounted scratch disk's size, 0 before MountScratch
 }
 
 // NewServer returns a Server that uses cfg.
@@ -53,6 +61,7 @@ func NewServer(cfg Config) *Server {
 		version: cfg.Version,
 		clock:   cfg.Clock,
 		entropy: cfg.Entropy,
+		scratch: cfg.Scratch,
 		started: time.Now(),
 	}
 	if s.clock == nil {
@@ -60,6 +69,9 @@ func NewServer(cfg Config) *Server {
 	}
 	if s.entropy == nil {
 		s.entropy = KernelEntropy{}
+	}
+	if s.scratch == nil {
+		s.scratch = KernelScratch{}
 	}
 	return s
 }

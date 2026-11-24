@@ -63,8 +63,9 @@ type Store struct {
 //     scratch size), and name firecrackerVersion (vmm.BinaryVersion of the
 //     Firecracker that will load it): a snapshot only loads in the
 //     Firecracker version that made it;
-//   - vm.snap, mem.snap and rootfs.ext4 must have the SHA-256 the manifest
-//     recorded, and mode 0444.
+//   - vm.snap, mem.snap, rootfs.ext4 and the scratch template
+//     scratch.ext4 must have the SHA-256 the manifest recorded, and mode
+//     0444.
 //
 // Hashing reads every file once (about a second for both classes); it
 // happens here and never when a clone is restored, so restore times never
@@ -130,6 +131,7 @@ func check(ctx context.Context, v *Version, class Class, firecrackerVersion stri
 		{StateName, m.StateSHA256},
 		{MemName, m.MemSHA256},
 		{RootfsName, m.RootfsSHA256},
+		{ScratchName, m.ScratchSHA256},
 	} {
 		info, err := os.Stat(v.Path(f.name))
 		if err != nil {
@@ -167,9 +169,11 @@ func (s *Store) Current(class string) (*Version, error) {
 
 // Prune deletes all but the newest keep versions of class, never the
 // current one. A clone that is still running keeps working: its hard links
-// keep the files' contents alive until it is destroyed. (From week 4,
-// sandboxd only prunes versions that no run uses; `make snapshots` keeps
-// two.) It returns the IDs it deleted.
+// keep the files' contents alive until it is destroyed. But a running
+// sandboxd keeps restoring from the version it opened, so `sandboxd
+// build-snapshots` only prunes while it holds the state folder's lock,
+// which a running daemon never lets go of (state.Root.Lock). It returns
+// the IDs it deleted.
 func Prune(root *state.Root, class string, keep int) ([]string, error) {
 	classDir := filepath.Join(root.SnapshotsDir(), class)
 	entries, err := os.ReadDir(classDir)

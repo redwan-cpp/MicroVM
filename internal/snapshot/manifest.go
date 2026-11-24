@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
-// ManifestFormat is the version of the manifest.json layout.
-const ManifestFormat = 1
+// ManifestFormat is the version of the manifest.json layout. Format 2
+// (week 4) added the scratch disk template; a store of format 1 has none,
+// so opening it says "run make snapshots".
+const ManifestFormat = 2
 
 // maxManifestSize is the largest manifest.json we read.
 const maxManifestSize = 64 << 10
@@ -44,6 +46,9 @@ type Manifest struct {
 	// StateSHA256 and MemSHA256 are vm.snap and mem.snap.
 	StateSHA256 string `json:"vm_snap_sha256"`
 	MemSHA256   string `json:"mem_snap_sha256"`
+	// ScratchSHA256 is scratch.ext4, the formatted template every clone
+	// gets its own copy of.
+	ScratchSHA256 string `json:"scratch_sha256"`
 
 	// VMGenID is true when the guest's vmgenid driver was bound to
 	// Firecracker's VM generation ID device. Then the guest kernel

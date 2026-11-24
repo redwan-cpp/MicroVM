@@ -236,20 +236,50 @@ func NewID() string {
 	return "r-" + hex.EncodeToString(b)
 }
 
+// ValidID reports whether id has the shape of NewID's IDs: "r-" and 16
+// lowercase hex digits. Every folder, jail and cgroup named after a run
+// uses such an ID, so it can never hold "/", ".." or anything else that
+// would point somewhere else.
+func ValidID(id string) bool {
+	if len(id) != IDLen || !strings.HasPrefix(id, "r-") {
+		return false
+	}
+	for _, r := range id[2:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // NewRunDir creates a fresh, private (mode 0700) run folder
-// <runs>/<id> and returns its ID and path. Nobody else can create,
-// see or change anything inside it.
+// <runs>/<id> with a new ID and returns the ID and the path. Nobody else
+// can create, see or change anything inside it.
 func (r *Root) NewRunDir() (id, dir string, err error) {
 	for range 3 {
 		id = NewID()
-		dir = filepath.Join(r.RunsDir(), id)
-		err = os.Mkdir(dir, 0o700)
+		dir, err = r.CreateRunDir(id)
 		if !errors.Is(err, fs.ErrExist) {
 			break // 64 random bits: a clash is practically impossible
 		}
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("state: create run folder: %w", err)
+		return "", "", err
 	}
 	return id, dir, nil
+}
+
+// CreateRunDir creates the private (mode 0700) run folder <runs>/<id> for
+// a run whose ID the caller chose (sandboxd picks the ID when it accepts a
+// run). It fails if the folder exists already: errors.Is(err,
+// fs.ErrExist).
+func (r *Root) CreateRunDir(id string) (string, error) {
+	if !ValidID(id) {
+		return "", fmt.Errorf("state: %q is not a run ID", id)
+	}
+	dir := filepath.Join(r.RunsDir(), id)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return "", fmt.Errorf("state: create run folder: %w", err)
+	}
+	return dir, nil
 }

@@ -32,8 +32,9 @@ type jail struct {
 //   - hard links to the snapshot's files, which keep their owner (the user
 //     who built the store) and mode 0444: the jailed user can read them
 //     and never change them;
-//   - a new scratch disk, given to the jailed user (Firecracker writes it);
-//     vmm gives the log file to that user too (vmm.Config.LogOwner).
+//   - (in Restore, right after) the clone's own copy of the scratch disk,
+//     given to the jailed user, since Firecracker writes it; vmm gives the
+//     log to that user too (vmm.Config.LogOwner).
 //
 // The jailer does the rest when it starts: it copies Firecracker in,
 // creates /dev/kvm, makes the chroot 0700 and the jailed user's, sets up
@@ -68,7 +69,7 @@ func (c *Clone) prepareJailed(root *state.Root, opts Options) (vmm.Config, error
 
 	v := c.version
 	plan, err := jailer.Build(jailer.Spec{
-		ID:          state.NewID(),
+		ID:          c.id,
 		UID:         j.UID,
 		GID:         j.GID,
 		ChrootBase:  base,
@@ -84,7 +85,6 @@ func (c *Clone) prepareJailed(root *state.Root, opts Options) (vmm.Config, error
 	if err != nil {
 		return vmm.Config{}, err
 	}
-	c.id = filepath.Base(plan.JailDir)
 	// A fresh random ID: if its folder exists, something is badly wrong,
 	// and Destroy must not delete what is there.
 	if _, err := os.Lstat(plan.JailDir); err == nil {
@@ -103,14 +103,8 @@ func (c *Clone) prepareJailed(root *state.Root, opts Options) (vmm.Config, error
 			return vmm.Config{}, fmt.Errorf("link %s into the chroot: %w", filepath.Base(l.From), err)
 		}
 	}
-	for _, path := range plan.Owned { // the scratch disk
-		if err := snapshot.CreateScratch(path, c.class.ScratchMiB); err != nil {
-			return vmm.Config{}, err
-		}
-		if err := os.Lchown(path, j.UID, j.GID); err != nil {
-			return vmm.Config{}, fmt.Errorf("give %s to the jailed user: %w", filepath.Base(path), err)
-		}
-	}
+	c.scratch = plan.Owned[0] // the only owned file
+	c.owner = &vmm.Owner{UID: j.UID, GID: j.GID}
 	return vmm.Config{
 		Binary:   firecracker,
 		RunDir:   plan.ChrootDir,

@@ -365,6 +365,34 @@ func TestReseedChecksLengthOnTheHost(t *testing.T) {
 	}
 }
 
+// scratchAgent answers MountScratch.
+type scratchAgent struct {
+	agentv1.UnimplementedAgentServiceServer
+	got []uint64
+}
+
+func (a *scratchAgent) MountScratch(_ context.Context, req *agentv1.MountScratchRequest) (*agentv1.MountScratchResponse, error) {
+	a.got = append(a.got, req.GetSizeBytes())
+	if req.GetSizeBytes() != 64<<20 {
+		return nil, status.Error(codes.FailedPrecondition, "wrong size")
+	}
+	return &agentv1.MountScratchResponse{}, nil
+}
+
+func TestMountScratchSendsTheSize(t *testing.T) {
+	a := &scratchAgent{}
+	c := serve(t, a)
+	if err := c.MountScratch(t.Context(), 64<<20); err != nil {
+		t.Errorf("MountScratch: %v", err)
+	}
+	if err := c.MountScratch(t.Context(), 1); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("MountScratch with a wrong size: %v, want the agent's FailedPrecondition", err)
+	}
+	if len(a.got) != 2 || a.got[0] != 64<<20 {
+		t.Errorf("the agent got %v", a.got)
+	}
+}
+
 // handshakeListener plays Firecracker's part of the vsock handshake for
 // every connection it accepts, then hands the connection to gRPC.
 type handshakeListener struct{ net.Listener }

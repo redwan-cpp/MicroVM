@@ -29,9 +29,11 @@ const (
 	// MaxRequestSize is the largest gRPC message the agent accepts.
 	// It bounds argv, env and stdin together.
 	MaxRequestSize = 1 << 20 // 1 MiB
-	// MaxStdin is the most stdin one request may carry. In practice the
-	// message cap above is reached first.
-	MaxStdin = MaxRequestSize
+	// MaxStdin is the most stdin one request may carry: 64 KiB less than
+	// the message cap, so a request with the largest stdin still has room
+	// for its argv and env. sandboxd checks the same ceiling, so a run
+	// that the daemon accepts never fails at the agent for its size.
+	MaxStdin = MaxRequestSize - 64<<10 // 960 KiB
 	// MaxEnvEntries is the most environment variables one request may add.
 	MaxEnvEntries = 64
 

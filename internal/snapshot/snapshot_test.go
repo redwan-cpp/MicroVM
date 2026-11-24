@@ -1,9 +1,11 @@
 package snapshot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -112,7 +114,8 @@ func TestManifestRoundTrip(t *testing.T) {
 func TestReadManifestIsStrict(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown field": `{"format": 1, "class": "small", "surprise": true}`,
-		"other format":  `{"format": 2, "class": "small"}`,
+		"older format":  `{"format": 1, "class": "small"}`,
+		"newer format":  `{"format": 3, "class": "small"}`,
 		"not json":      `hello`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -138,7 +141,8 @@ func fakeVersion(t *testing.T, root *state.Root, class Class, id string) *Versio
 	}
 	m := &Manifest{Format: ManifestFormat, Class: class.Name, VCPUs: class.VCPUs, MemoryMiB: class.MemoryMiB,
 		ScratchMiB: class.ScratchMiB, FirecrackerVersion: "v1.17.0"}
-	for name, sum := range map[string]*string{StateName: &m.StateSHA256, MemName: &m.MemSHA256, RootfsName: &m.RootfsSHA256} {
+	for name, sum := range map[string]*string{StateName: &m.StateSHA256, MemName: &m.MemSHA256, RootfsName: &m.RootfsSHA256,
+		ScratchName: &m.ScratchSHA256} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(id+name), 0o444); err != nil { //nolint:gosec // G306: store files are 0444 by design
 			t.Fatal(err)
@@ -219,6 +223,12 @@ func TestOpenRefusesABadSnapshot(t *testing.T) {
 				}
 			},
 			want: "vm.snap has mode 0644",
+		},
+		"changed scratch template": {
+			change: func(t *testing.T, v *Version) {
+				replaceFile(t, v.Path(ScratchName), "tampered", 0o444)
+			},
+			want: "scratch.ext4 has SHA-256",
 		},
 		"missing root disk": {
 			change: func(t *testing.T, v *Version) {
@@ -357,9 +367,149 @@ func TestManifestJSONNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"format", "class", "vcpus", "memory_mib", "scratch_mib", "firecracker_version",
-		"kernel_sha256", "rootfs_sha256", "agent_version", "vm_snap_sha256", "mem_snap_sha256", "vmgenid", "created_at"} {
+		"kernel_sha256", "rootfs_sha256", "agent_version", "vm_snap_sha256", "mem_snap_sha256", "scratch_sha256",
+		"vmgenid", "created_at"} {
 		if !strings.Contains(string(data), `"`+key+`"`) {
 			t.Errorf("manifest JSON has no %q: %s", key, data)
 		}
+	}
+}
+
+func TestOpenRefusesAWeek3Store(t *testing.T) {
+	root := openState(t)
+	v := fakeVersion(t, root, Classes[0], testID)
+	// A week-3 manifest: format 1, no scratch template.
+	if err := os.Remove(v.Path(ManifestName)); err != nil {
+		t.Fatal(err)
+	}
+	v.Manifest.Format = 1
+	if err := writeManifest(v.Dir, v.Manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(t.Context(), root, "v1.17.0"); err == nil || !strings.Contains(err.Error(), "run make snapshots") {
+		t.Errorf("Open of a format-1 store = %v, want run make snapshots", err)
+	}
+}
+
+// allocated returns how many bytes of disk the file at path takes.
+func allocated(t *testing.T, path string) int64 {
+	t.Helper()
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st.Blocks * 512 // st_blocks counts 512-byte units
+}
+
+func TestCopySparseKeepsHoles(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "sparse")
+	const size = 16 << 20
+	f, err := os.Create(from) //nolint:gosec // G304: a test file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	// Data at the start, in the middle and at the very end; holes between.
+	for i, at := range []int64{0, 5<<20 + 123, size - 4096} {
+		if _, err := f.WriteAt(bytes.Repeat([]byte{'a' + byte(i)}, 4096), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	to := filepath.Join(dir, "copy")
+	if err := copySparse(from, to, 0o600); err != nil {
+		t.Fatalf("copySparse: %v", err)
+	}
+	want, _ := os.ReadFile(from) //nolint:gosec // G304: a test file
+	got, _ := os.ReadFile(to)    //nolint:gosec // G304: a test file
+	if !bytes.Equal(got, want) {
+		t.Fatal("the copy's contents differ")
+	}
+	if info, err := os.Stat(to); err != nil || info.Mode().Perm() != 0o600 || info.Size() != size {
+		t.Errorf("copy: %v, %v; want mode 0600 and %d bytes", info, err, size)
+	}
+	// The copy takes no more disk space than the original: the holes
+	// stayed holes. (The original's own blocks are the bound, since a
+	// filesystem may allocate a little more than the data.)
+	if a, b := allocated(t, from), allocated(t, to); b > a || b >= size/2 {
+		t.Errorf("copy allocates %d bytes, the original %d (of %d): the holes were filled", b, a, size)
+	}
+	if err := copySparse(from, to, 0o600); err == nil {
+		t.Error("copySparse over an existing file succeeded, want an error (never overwrite)")
+	}
+
+	// A file with no data at all is copied as one hole.
+	empty := filepath.Join(dir, "empty")
+	if err := CreateScratch(empty, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := copySparse(empty, filepath.Join(dir, "empty-copy"), 0o600); err != nil {
+		t.Fatalf("copySparse of a hole: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "empty-copy")); err != nil || info.Size() != 1<<20 ||
+		allocated(t, filepath.Join(dir, "empty-copy")) != 0 {
+		t.Errorf("copy of an all-hole file: %v, %v; want 1 MiB, nothing allocated", info, err)
+	}
+}
+
+func TestScratchTemplateAndCopy(t *testing.T) {
+	mkfs, err := FindMkfs()
+	if err != nil {
+		t.Skip(err)
+	}
+	root := openState(t)
+	v := fakeVersion(t, root, Classes[0], testID)
+	// Replace the fake template with a real one, made the way Build does.
+	if err := os.Remove(v.Path(ScratchName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeScratchTemplate(t.Context(), mkfs, v.Path(ScratchName), 8); err != nil {
+		t.Fatalf("makeScratchTemplate: %v", err)
+	}
+	info, err := os.Stat(v.Path(ScratchName))
+	if err != nil || info.Size() != 8<<20 {
+		t.Fatalf("template: %v, %v; want exactly 8 MiB, the placeholder's size", info, err)
+	}
+	// An ext4 superblock starts at byte 1024; its magic number 0xEF53 is at
+	// offset 0x38 in it.
+	head := make([]byte, 2048)
+	tf, err := os.Open(v.Path(ScratchName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadFull(tf, head)
+	_ = tf.Close()
+	if err != nil || head[1024+0x38] != 0x53 || head[1024+0x39] != 0xef {
+		t.Errorf("no ext4 superblock in the template (%v)", err)
+	}
+	if a := allocated(t, v.Path(ScratchName)); a > 2<<20 {
+		t.Errorf("template allocates %d bytes of 8 MiB, want a sparse file", a)
+	}
+
+	_, dir, err := root.NewRunDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(dir, ScratchName)
+	if err := v.CopyScratch(clone); err != nil {
+		t.Fatalf("CopyScratch: %v", err)
+	}
+	var store, mine syscall.Stat_t
+	if syscall.Stat(v.Path(ScratchName), &store) != nil || syscall.Stat(clone, &mine) != nil {
+		t.Fatal("a scratch disk is missing")
+	}
+	// A copy, never a link: each clone's writes stay its own.
+	if store.Ino == mine.Ino || store.Nlink != 1 || mine.Nlink != 1 {
+		t.Errorf("the clone's scratch disk shares the template's inode (%d, %d links)", mine.Ino, mine.Nlink)
+	}
+	if mine.Mode&0o777 != 0o600 || mine.Size != store.Size || mine.Blocks > store.Blocks {
+		t.Errorf("copy: mode %04o, %d bytes, %d blocks; want 0600, %d bytes, at most %d blocks",
+			mine.Mode&0o777, mine.Size, mine.Blocks, store.Size, store.Blocks)
 	}
 }

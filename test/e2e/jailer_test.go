@@ -169,6 +169,14 @@ func TestJailerRestore(t *testing.T) {
 	})
 
 	t.Run("EchoHi", func(t *testing.T) {
+		mountCtx, cancelMount := context.WithTimeout(ctx, 2*time.Second)
+		defer cancelMount()
+		if err := c.MountScratch(mountCtx); err != nil {
+			t.Fatalf("MountScratch: %v", err)
+		}
+		if _, out := cloneExec(t, c, "sh", "-c", "touch mine && ls"); out != "lost+found\nmine\n" {
+			t.Errorf("ls /work = %q, want lost+found and mine", out)
+		}
 		res, out := cloneExec(t, c, "echo", "hi")
 		if out != "hi\n" || !res.Exited || res.ExitCode != 0 || res.Mode != clone.Jailer {
 			t.Errorf("echo hi: %q, %+v; want hi, exit 0, mode jailer", out, res)

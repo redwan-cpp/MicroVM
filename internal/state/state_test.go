@@ -1,6 +1,8 @@
 package state
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -179,6 +181,38 @@ func TestNewRunDir(t *testing.T) {
 			t.Errorf("id %s handed out twice", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestValidIDAndCreateRunDir(t *testing.T) {
+	for id, want := range map[string]bool{
+		NewID():               true,
+		"r-0123456789abcdef":  true,
+		"r-0123456789ABCDEF":  false, // NewID writes lowercase
+		"r-0123456789abcde":   false,
+		"r-0123456789abcdef0": false,
+		"x-0123456789abcdef":  false,
+		"r-../../etc/passwd!": false,
+		"":                    false,
+	} {
+		if got := ValidID(id); got != want {
+			t.Errorf("ValidID(%q) = %v, want %v", id, got, want)
+		}
+	}
+
+	r, err := Open(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := r.CreateRunDir("r-0123456789abcdef")
+	if err != nil || dir != filepath.Join(r.RunsDir(), "r-0123456789abcdef") {
+		t.Fatalf("CreateRunDir = %q, %v", dir, err)
+	}
+	if _, err := r.CreateRunDir("r-0123456789abcdef"); !errors.Is(err, fs.ErrExist) {
+		t.Errorf("CreateRunDir of an existing folder: %v, want fs.ErrExist", err)
+	}
+	if _, err := r.CreateRunDir("../escape"); err == nil {
+		t.Error("CreateRunDir accepted a path")
 	}
 }
 

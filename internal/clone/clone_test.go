@@ -114,6 +114,7 @@ func serveAgent(reseedFails bool) error {
 		Version: "fake agent",
 		Clock:   fakeClock{},
 		Entropy: fakeEntropy{fail: reseedFails},
+		Scratch: fakeScratch{},
 	}))
 	go func() { _ = gs.Serve(handshakeListener{lis}) }()
 	return nil
@@ -122,6 +123,23 @@ func serveAgent(reseedFails bool) error {
 type fakeClock struct{}
 
 func (fakeClock) SetTime(time.Time) error { return nil }
+
+// fakeScratch checks the size the host asks for against the clone's
+// scratch disk, in the fake's working folder (the run folder).
+type fakeScratch struct{}
+
+func (fakeScratch) Mount(size uint64) error {
+	info, err := os.Stat("scratch.ext4")
+	if err != nil {
+		return err
+	}
+	if uint64(info.Size()) != size { //nolint:gosec // G115: a file size is never negative
+		return fmt.Errorf("fake: scratch.ext4 is %d bytes, asked to mount %d", info.Size(), size)
+	}
+	return nil
+}
+
+func (fakeScratch) Dir() string { return "/" }
 
 type fakeEntropy struct{ fail bool }
 
@@ -181,13 +199,22 @@ func newStore(t *testing.T) *snapshot.Store {
 		MemoryMiB: class.MemoryMiB, ScratchMiB: class.ScratchMiB, FirecrackerVersion: "v1.17.0"}
 	for name, sum := range map[string]*string{
 		snapshot.StateName: &m.StateSHA256, snapshot.MemName: &m.MemSHA256, snapshot.RootfsName: &m.RootfsSHA256,
+		snapshot.ScratchName: &m.ScratchSHA256,
 	} {
-		content := []byte("fake " + name)
-		if err := os.WriteFile(filepath.Join(version, name), content, 0o444); err != nil { //nolint:gosec // G306: store files are 0444 by design
+		path := filepath.Join(version, name)
+		if err := os.WriteFile(path, []byte("fake "+name), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		h := sha256.Sum256(content)
-		*sum = hex.EncodeToString(h[:])
+		if name == snapshot.ScratchName {
+			// A real template has the class's size; most of it is a hole.
+			if err := os.Truncate(path, int64(class.ScratchMiB)<<20); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chmod(path, 0o444); err != nil { //nolint:gosec // G302: store files are 0444 by design
+			t.Fatal(err)
+		}
+		*sum = sha256File(t, path)
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
@@ -205,6 +232,21 @@ func newStore(t *testing.T) *snapshot.Store {
 		t.Fatalf("snapshot.Open: %v", err)
 	}
 	return store
+}
+
+// sha256File returns the SHA-256 of the file at path, in hex.
+func sha256File(t *testing.T, path string) string {
+	t.Helper()
+	f, err := os.Open(path) //nolint:gosec // G304: a test file
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck // read-only file
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func restore(t *testing.T, store *snapshot.Store, mode string) (*Clone, error) {
@@ -228,8 +270,8 @@ func TestRestoreAndDestroy(t *testing.T) {
 		t.Errorf("mode %q, timings mode %q; want rootless", c.Mode(), c.Timings().Mode)
 	}
 	tm := c.Timings()
-	if tm.Prepare <= 0 || tm.ProcessStart <= 0 || tm.LoadSnapshot <= 0 || tm.AgentReady <= 0 || tm.DeTwin <= 0 ||
-		tm.Total < tm.Prepare+tm.ProcessStart+tm.LoadSnapshot+tm.AgentReady+tm.DeTwin {
+	if tm.Prepare <= 0 || tm.Scratch <= 0 || tm.ProcessStart <= 0 || tm.LoadSnapshot <= 0 || tm.AgentReady <= 0 || tm.DeTwin <= 0 ||
+		tm.Total < tm.Prepare+tm.Scratch+tm.ProcessStart+tm.LoadSnapshot+tm.AgentReady+tm.DeTwin {
 		t.Errorf("timings %+v: every phase must be positive and add up to at most Total", tm)
 	}
 	if !strings.HasPrefix(tm.String(), "rootless: prepare ") {
@@ -248,10 +290,24 @@ func TestRestoreAndDestroy(t *testing.T) {
 	if filepath.Base(c.Dir()) != c.ID() || filepath.Dir(c.Dir()) != store.Root().RunsDir() {
 		t.Errorf("run folder %s, want %s/%s", c.Dir(), store.Root().RunsDir(), c.ID())
 	}
+	// The scratch disk is the clone's own copy of the template, never a
+	// link: what the clone writes stays its own.
+	var tmpl, scratch syscall.Stat_t
+	if syscall.Stat(v.Path(snapshot.ScratchName), &tmpl) != nil ||
+		syscall.Stat(filepath.Join(c.Dir(), snapshot.ScratchName), &scratch) != nil {
+		t.Fatal("a scratch disk is missing")
+	}
+	if tmpl.Ino == scratch.Ino || tmpl.Nlink != 1 || scratch.Size != tmpl.Size || scratch.Mode&0o777 != 0o600 {
+		t.Errorf("scratch disk: inode %d (template %d), %d links, %d bytes, mode %04o; want a private 0600 copy",
+			scratch.Ino, tmpl.Ino, tmpl.Nlink, scratch.Size, scratch.Mode&0o777)
+	}
 
 	// The fake's agent is the real one, running on the host here.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
+	if err := c.MountScratch(ctx); err != nil {
+		t.Errorf("MountScratch: %v", err)
+	}
 	var out strings.Builder
 	res, err := c.Exec(ctx, &agentv1.ExecRequest{Argv: []string{"echo", "hi"}}, &out, nil)
 	if err != nil || out.String() != "hi\n" || !res.Exited || res.ExitCode != 0 {
@@ -319,6 +375,34 @@ func TestRestoreReportsAFailedCleanup(t *testing.T) {
 	if !strings.Contains(err.Error(), "load snapshot") || !strings.Contains(err.Error(), "destroy") ||
 		!errors.Is(err, os.ErrPermission) {
 		t.Errorf("err = %v; want the load error joined with Destroy's permission error", err)
+	}
+	var cleanup *CleanupError
+	if !errors.As(err, &cleanup) || !strings.HasPrefix(cleanup.ID, "r-") {
+		t.Errorf("err = %v; want a *CleanupError for the clone inside", err)
+	}
+}
+
+func TestRestoreUsesTheGivenID(t *testing.T) {
+	store := newStore(t)
+	t.Setenv(fakeEnv, "serve")
+	const id = "r-00000000000000aa"
+	c, err := Restore(t.Context(), store, "small", Options{Firecracker: os.Args[0], ID: id})
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Destroy() })
+	if c.ID() != id || c.Dir() != filepath.Join(store.Root().RunsDir(), id) {
+		t.Errorf("ID %s, folder %s; want %s", c.ID(), c.Dir(), id)
+	}
+	// The same ID again: its folder exists, and Restore must not touch it.
+	if _, err := Restore(t.Context(), store, "small", Options{Firecracker: os.Args[0], ID: id}); err == nil {
+		t.Error("a second Restore with the same ID succeeded")
+	}
+	if _, err := os.Stat(c.Dir()); err != nil {
+		t.Errorf("the first clone's folder is gone after the failed second Restore: %v", err)
+	}
+	if _, err := Restore(t.Context(), store, "small", Options{Firecracker: os.Args[0], ID: "../x"}); err == nil {
+		t.Error("Restore accepted an ID that is not a run ID")
 	}
 }
 

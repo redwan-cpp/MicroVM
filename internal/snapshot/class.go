@@ -11,8 +11,9 @@
 //	snapshots/<class>/
 //	  <version>/          one folder per build, never changed afterwards
 //	    vm.snap           \
-//	    mem.snap           > mode 0444: nobody may write them, not even us
-//	    rootfs.ext4       /  (rootfs.ext4 is a hard link: the disk it was built from)
+//	    mem.snap           \ mode 0444: nobody may write them, not even us
+//	    rootfs.ext4        / (rootfs.ext4 is a hard link: the disk it was built from)
+//	    scratch.ext4      /  the formatted scratch template, copied for each clone
 //	    manifest.json     what was built from what, with SHA-256 hashes
 //	  current -> <version>   a symlink, swapped atomically after each build
 //
@@ -34,7 +35,9 @@ import (
 const (
 	// RootfsName is the read-only root disk, /dev/vda in the guest.
 	RootfsName = "rootfs.ext4"
-	// ScratchName is the per-clone writable disk, /dev/vdb in the guest.
+	// ScratchName is the per-clone writable disk, /dev/vdb in the guest,
+	// mounted at /work. In a version folder it is the formatted template
+	// that every clone gets its own copy of.
 	ScratchName = "scratch.ext4"
 	// StateName is the VM state file.
 	StateName = "vm.snap"
