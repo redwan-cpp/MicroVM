@@ -38,7 +38,7 @@ TOOLS              := $(GOLANGCI_LINT) $(BUF) $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_G
 GEN_DIR := internal/gen
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint breaking fmt generate generate-check tools firecracker guest snapshots boot demo e2e e2e-jailer bench clean
+.PHONY: help build test lint breaking fmt generate generate-check tools firecracker guest snapshots boot demo demo1 e2e e2e-jailer bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -145,6 +145,12 @@ boot: ## Boot one microVM by hand through Firecracker's API, then destroy it
 
 demo: ## Live demo, step by step (press Enter between steps)
 	./scripts/demo.sh
+
+# Demo 1 builds what it needs itself (make build, make snapshots), as you.
+# scripts/demo1.sh --jailer runs it in jailer mode: only the daemon runs
+# with sudo.
+demo1: ## Demo 1: three clones at once through sandboxd, step by step (rootless; see scripts/demo1.sh --jailer)
+	./scripts/demo1.sh
 
 # They need KVM and the guest image, so they never run in GitHub CI (CI only
 # checks that they compile, through `make lint`).

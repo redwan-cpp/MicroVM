@@ -108,8 +108,18 @@ step "The policy decides the VM's size" \
   "Today a flag. From week 5, a YAML policy validated by sandboxd (deny by default)."
 run "scripts/boot-vm.sh -q --vcpus 2 --mem 512 -- 'nproc; free -m | head -2'"
 
+step "Demo 1: the daemon runs three clones at once" \
+  "Every VM above cold-booted by hand. sandboxd restores clones from a snapshot in about 20 ms; Demo 1 has its own script."
+run "./bin/sandboxctl run -- echo hi 2> /dev/null || echo 'no sandboxd running: Demo 1 starts one'"
+cat << EOF
+
+  ${Y}make demo1${N}                  three clones at once, private /work disks, ps, logs, the audit chain
+  ${Y}scripts/demo1.sh --jailer${N}   the same in jailer mode: only the daemon runs with sudo
+
+EOF
+
 step "What comes next" \
-  "Every VM above cold-booted. make e2e already restores clones from a snapshot; next, sandboxd puts it all in charge."
+  "Demo 1 works: the daemon restores, runs and destroys clones, and writes an audit record for every run."
 cat <<EOF
 
   ${G}✓ week 0${N}   foundations: plan, ADRs, threat model, Go skeleton, CI, pinned tools
@@ -117,7 +127,8 @@ cat <<EOF
   ${G}✓ week 2${N}   sandbox-agent inside the VM, gRPC over vsock; the host enforces every limit (make e2e)
   ${G}✓ week 3${N}   snapshots: restore in ~15-20 ms instead of booting; jailer mode (chroot, UID drop,
              cgroups): one manual root run passed on the dev machine, 51 ms per restore (not in CI)
-    week 4   ${B}Demo 1${N}: sandboxctl run, three clones at once from one snapshot
+  ${G}✓ week 4${N}   ${B}Demo 1${N}: sandboxd + sandboxctl, three clones at once from one snapshot, each with
+             its own /work disk; run state machine; hash-chained audit log (make demo1)
     week 8   ${B}Demo 2${N}: networking off by default, policies change the limits
     week 9   escape-test suite: every attempt blocked or logged
     week 10  benchmarks: p50/p99 restore latency, clones per GB
