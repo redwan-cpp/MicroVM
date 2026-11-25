@@ -34,6 +34,19 @@ service SandboxService {
 
   // Get returns one run, with all its state changes and its result.
   rpc Get(GetRequest) returns (GetResponse);
+
+  // Info describes the daemon: its mode, versions and limits, the host's
+  // architecture and whether the host is itself a VM, and the size
+  // classes it can restore, each with the cold boot measured when its
+  // snapshot was made. It changes nothing.
+  rpc Info(InfoRequest) returns (InfoResponse);
+
+  // HostStats reports what the daemon's clones use on the host right
+  // now: each live clone's Firecracker process and its memory, and what
+  // exists in the daemon's state folder (run folders, jails) and its
+  // cgroups. It looks only at the daemon's own clones and state folder,
+  // and changes nothing.
+  rpc HostStats(HostStatsRequest) returns (HostStatsResponse);
 }
 
 // RunRequest describes one run. Fields this version does not know are
@@ -122,6 +135,9 @@ message StateChange {
   // detail says why, for example the error that made a run fail. It may
   // quote text from the guest, with control characters removed.
   string detail = 3;
+  // run_id names the run, so that the caller of Run knows it from the
+  // first event (PENDING) on, not only from the result.
+  string run_id = 4;
 }
 
 // Outcome is how a run ended, as judged by the host. The agent's own
@@ -250,6 +266,10 @@ message RunInfo {
   repeated StateChange transitions = 8;
   // result is set once the run is DONE or FAILED.
   RunResult result = 9;
+  // jailed_uid is the UID the run's Firecracker runs as, in jailer mode
+  // once the run has a slot (70000 + the slot); 0 in rootless mode and
+  // before that.
+  uint32 jailed_uid = 10;
 }
 
 // LogsRequest names one run.
@@ -304,4 +324,133 @@ message GetRequest {
 message GetResponse {
   // run is the run.
   RunInfo run = 1;
+}
+
+// InfoRequest asks the daemon to describe itself.
+message InfoRequest {}
+
+// InfoResponse describes the daemon.
+message InfoResponse {
+  // mode is how every clone is confined.
+  Mode mode = 1;
+  // daemon_version is the sandboxd build, for example
+  // "sandboxd v0.1.0 (commit 1a2b3c4, go1.27.3 linux/amd64)".
+  string daemon_version = 2;
+  // firecracker_version is the Firecracker the daemon runs, for example
+  // "v1.17.0".
+  string firecracker_version = 3;
+  // arch is the host's CPU architecture: "x86_64" or "aarch64".
+  string arch = 4;
+  // max_concurrent is how many runs may have a clone at once.
+  uint32 max_concurrent = 5;
+  // max_pending is how many more may wait for a slot.
+  uint32 max_pending = 6;
+  // classes are the size classes that have a snapshot, smallest first.
+  repeated ClassInfo classes = 7;
+  // host_kind says whether the daemon's host is itself a VM, as far as
+  // the daemon could tell when it started.
+  HostKind host_kind = 8;
+  // host_detail says what host_kind is based on, for example "the CPU's
+  // hypervisor flag is set; firmware: QEMU".
+  string host_detail = 9;
+}
+
+// ClassInfo is one size class and the snapshot the daemon restores it
+// from.
+message ClassInfo {
+  // name is the class's name, for example "small".
+  string name = 1;
+  // vcpus, memory_mib and scratch_mib are its shape.
+  uint32 vcpus = 2;
+  uint32 memory_mib = 3;
+  uint32 scratch_mib = 4;
+  // snapshot_version names the snapshot, for example
+  // "20261124T090000Z-1a2b3c".
+  string snapshot_version = 5;
+  // snapshot_created_at is when it was made.
+  google.protobuf.Timestamp snapshot_created_at = 6;
+  // kernel_version is the guest kernel's release, for example "6.1.155".
+  string kernel_version = 7;
+  // agent_version is the sandbox-agent in the snapshot.
+  string agent_version = 8;
+  // vmgenid is true if the guest kernel reseeds its random number
+  // generator by itself on every restore (VMGenID).
+  bool vmgenid = 9;
+  // cold_boot_us is how long the VM the snapshot was made from took to
+  // boot, in microseconds, from InstanceStart to the agent's first
+  // answer, measured by make snapshots on this host: the reference a
+  // restore is compared with.
+  uint64 cold_boot_us = 10;
+}
+
+// HostKind says whether the daemon's host is a physical machine or
+// itself a VM. Timings measured inside a VM (nested virtualization) are
+// not those of a physical machine, so they are always labelled.
+enum HostKind {
+  // HOST_KIND_UNSPECIFIED is never sent.
+  HOST_KIND_UNSPECIFIED = 0;
+  // HOST_KIND_UNKNOWN: the daemon could not tell.
+  HOST_KIND_UNKNOWN = 1;
+  // HOST_KIND_PHYSICAL: no sign of a hypervisor, neither the CPU's
+  // hypervisor flag nor a virtual machine's firmware.
+  HOST_KIND_PHYSICAL = 2;
+  // HOST_KIND_VIRTUAL: the host is itself a VM, so its microVMs run
+  // under nested virtualization.
+  HOST_KIND_VIRTUAL = 3;
+}
+
+// HostStatsRequest asks what the daemon's clones use now.
+message HostStatsRequest {}
+
+// HostStatsResponse is what the daemon's clones use on the host, at one
+// moment.
+message HostStatsResponse {
+  // at is when the daemon looked.
+  google.protobuf.Timestamp at = 1;
+  // clones are the daemon's live clones: each run whose clone is
+  // restored and not yet being destroyed.
+  repeated CloneStats clones = 2;
+  // firecracker_processes counts the processes whose working folder is
+  // in the state folder's runs/ or jail/, where every clone's
+  // Firecracker runs, in whatever state its run is (also while it is
+  // restored or destroyed, and one the daemon lost track of).
+  Count firecracker_processes = 3;
+  // run_dirs counts the folders in runs/: one per rootless clone.
+  Count run_dirs = 4;
+  // jail_dirs counts the folders in jail/firecracker/: one per jailed
+  // clone.
+  Count jail_dirs = 5;
+  // cgroups counts the cgroups in the cgroup v2 folder microvm/: one per
+  // jailed clone.
+  Count cgroups = 6;
+}
+
+// Count is a number the daemon counted, or why it could not.
+message Count {
+  // n is the number.
+  uint32 n = 1;
+  // error says why n could not be counted. Then n is 0 and means
+  // nothing.
+  string error = 2;
+}
+
+// CloneStats is one live clone.
+message CloneStats {
+  // run_id names its run.
+  string run_id = 1;
+  // pid is its Firecracker's process ID.
+  int32 pid = 2;
+  // jailed_uid is the UID Firecracker runs as in jailer mode, else 0.
+  uint32 jailed_uid = 3;
+  // rss_bytes is the process's resident memory: every page it has in
+  // RAM, shared ones counted in full (from /proc/<pid>/smaps_rollup).
+  uint64 rss_bytes = 4;
+  // pss_bytes is its proportional share: a page shared by n processes
+  // counts 1/n. Clones restored from one snapshot share its memory
+  // file's pages until they write to them, so their PSS is below their
+  // RSS.
+  uint64 pss_bytes = 5;
+  // memory_error says why rss_bytes and pss_bytes could not be read.
+  // Then both are 0 and mean nothing.
+  string memory_error = 6;
 }
