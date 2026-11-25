@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -103,6 +104,9 @@ type Daemon struct {
 	mode     clone.Mode
 	maxConc  int
 	root     *state.Root
+	// jailParents are the folders the jailer creates as root for every
+	// clone (jailer mode): Shutdown removes them once they are empty.
+	jailParents []string
 }
 
 // Start opens everything a daemon needs, in this order, and starts
@@ -176,6 +180,7 @@ func Start(opts Options) (_ *Daemon, err error) {
 			return nil, fmt.Errorf("daemon: the jailer: %w (run make firecracker)", err)
 		}
 		jailerOpts = &clone.JailerOptions{Binary: opts.JailerBinary, UID: jailer.DefaultUID, GID: jailer.DefaultGID}
+		d.jailParents = jailParents(d.root.JailDir(), opts.Firecracker, readMounts)
 	}
 
 	// 4. The snapshot store.
@@ -282,7 +287,50 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		d.grpc.Stop() // cut off what is left
 		<-stopped
 	}
+	removeEmptyDirs(d.jailParents...)
 	return errors.Join(err, d.close())
+}
+
+// jailParents returns the two shared folders the jailer creates, as
+// root, around every clone's own jail and cgroup: <jail>/firecracker
+// (named after the firecracker binary) and the cgroup v2 folder
+// microvm/. mounts opens /proc/self/mounts; a folder that cannot be found
+// is left out.
+func jailParents(jailDir, firecracker string, mounts func() (io.ReadCloser, error)) []string {
+	var dirs []string
+	// The jailer resolves symlinks in both paths; so do we.
+	base, err := filepath.EvalSymlinks(jailDir)
+	if err == nil {
+		var fc string
+		if fc, err = filepath.Abs(firecracker); err == nil {
+			if resolved, err := filepath.EvalSymlinks(fc); err == nil {
+				fc = resolved
+			}
+			dirs = append(dirs, filepath.Dir(jailer.JailDir(base, fc, "x")))
+		}
+	}
+	if f, err := mounts(); err == nil {
+		root, err := jailer.CgroupRoot(f)
+		_ = f.Close()
+		if err == nil {
+			dirs = append(dirs, filepath.Join(root, jailer.ParentCgroup))
+		}
+	}
+	return dirs
+}
+
+func readMounts() (io.ReadCloser, error) { return os.Open("/proc/self/mounts") }
+
+// removeEmptyDirs removes each folder if it is empty, so that a clean
+// jailer-mode run leaves nothing of root's behind. rmdir(2) only removes
+// an empty folder (and a cgroup with no child cgroups and no processes),
+// so it never deletes what a clone left behind: that stays for the
+// reconciler (week 7) or the cleanup commands in the README. Errors
+// (not empty, not there) are expected and ignored.
+func removeEmptyDirs(dirs ...string) {
+	for _, d := range dirs {
+		_ = syscall.Rmdir(d)
+	}
 }
 
 // close undoes Start, in reverse.

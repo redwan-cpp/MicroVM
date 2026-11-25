@@ -264,14 +264,18 @@ pgrep -x firecracker > /dev/null && left=1
 show "ls -A ${STATE}/runs; echo '(runs/ is empty)'"
 [[ -z "$(ls -A "${STATE}/runs")" ]] || left=1
 if ((JAILER)); then
-  # The jailer keeps the shared parent folder jail/firecracker/ (root's,
-  # mode 0700, so only root can look inside); each clone's own jail in it
-  # must be gone.
+  # Each clone's own jail, jail/firecracker/<id>, must be gone. The jailer
+  # makes the shared parent jail/firecracker/ as root (mode 0700, so only
+  # root can look inside); the daemon removes it on shutdown once it is
+  # empty.
   show "sudo -n find ${STATE}/jail -mindepth 2 -maxdepth 2; echo '(no jails left)'"
   jails="$(sudo -n find "${STATE}/jail" -mindepth 2 -maxdepth 2 2> /dev/null)" || jails="(could not look: sudo)"
   [[ -z "${jails}" ]] || left=1
-  show "ls /sys/fs/cgroup/microvm 2> /dev/null || echo 'no microvm cgroups'"
-  [[ -d /sys/fs/cgroup/microvm && -n "$(find /sys/fs/cgroup/microvm -mindepth 1 -maxdepth 1 -type d)" ]] && left=1
+  # Only the clones' own cgroups count: microvm/ itself is full of the
+  # kernel's control files (cgroup.procs, memory.max, ...), and the daemon
+  # removes it on shutdown once no clone cgroup is left in it.
+  show "find /sys/fs/cgroup/microvm -mindepth 1 -maxdepth 1 -type d 2> /dev/null | grep . || echo 'no clone cgroups left'"
+  [[ -n "$(find /sys/fs/cgroup/microvm -mindepth 1 -maxdepth 1 -type d 2> /dev/null)" ]] && left=1
 fi
 show "ls -l ${SOCKET} 2> /dev/null || echo 'no socket'"
 [[ -e "${SOCKET}" ]] && left=1

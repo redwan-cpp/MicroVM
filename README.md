@@ -98,6 +98,7 @@ If a root run is interrupted (Ctrl-C, a timeout) before it cleans up, finish by 
 for uid in $(seq 70000 70031); do sudo pkill -KILL -u "$uid"; done   # jailed Firecrackers (UID 70000 + slot)
 sudo rm -rf guest/out/state/jail/firecracker/<id>    # its chroot
 sudo rmdir guest/out/state/jail/firecracker          # the shared parent, once it is empty
+find /sys/fs/cgroup/microvm -mindepth 1 -maxdepth 1 -type d     # clone cgroups left, if any (not the control files)
 sudo rmdir /sys/fs/cgroup/microvm/<id> /sys/fs/cgroup/microvm   # its cgroup, then the parent
 sudo rm -f /run/sandboxd/sandboxd.sock               # a jailer-mode daemon's socket, if it was killed
 ```

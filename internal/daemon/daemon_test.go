@@ -1267,3 +1267,51 @@ func TestClassifyHost(t *testing.T) {
 		t.Errorf("DetectHost() = %+v", got)
 	}
 }
+
+func TestJailParents(t *testing.T) {
+	dir := t.TempDir()
+	jail := filepath.Join(dir, "state", "jail")
+	if err := os.MkdirAll(jail, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The state folder through a symlink, the binary under another name:
+	// the jailer resolves both, and names the parent after the binary.
+	if err := os.Symlink(filepath.Join(dir, "state"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	fc := filepath.Join(dir, "fc-v1.17")
+	if err := os.WriteFile(fc, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mounts := func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("proc /proc proc rw 0 0\ncgroup2 /sys/fs/cgroup cgroup2 rw,nosuid 0 0\n")), nil
+	}
+	got := jailParents(filepath.Join(dir, "link", "jail"), fc, mounts)
+	want := []string{filepath.Join(jail, "fc-v1.17"), "/sys/fs/cgroup/microvm"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("jailParents = %v, want %v", got, want)
+	}
+	// No cgroup v2, no jail folder: nothing to remove, no error.
+	none := func() (io.ReadCloser, error) { return nil, errors.New("no /proc") }
+	if got := jailParents(filepath.Join(dir, "missing"), fc, none); len(got) != 0 {
+		t.Errorf("jailParents without either = %v", got)
+	}
+}
+
+func TestRemoveEmptyDirs(t *testing.T) {
+	dir := t.TempDir()
+	empty, full := filepath.Join(dir, "empty"), filepath.Join(dir, "full")
+	for _, d := range []string{empty, filepath.Join(full, "r-0123456789abcdef")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeEmptyDirs(empty, full, filepath.Join(dir, "missing"))
+	if _, err := os.Stat(empty); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the empty folder is still there: %v", err)
+	}
+	// A folder with something left in it is never touched.
+	if _, err := os.Stat(filepath.Join(full, "r-0123456789abcdef")); err != nil {
+		t.Errorf("what was left behind is gone: %v", err)
+	}
+}

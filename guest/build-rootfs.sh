@@ -70,7 +70,9 @@ unshare --map-root-user --map-auto -- bash -euo pipefail -c '
   mkfs.ext4 -q -F -L rootfs -d "${stage}" "${image}" "${size}"
 ' _ "${CACHE}/${TARBALL}" "${STAGE}" "${INIT}" "${AGENT}" "${DEST}.tmp" "${IMAGE_SIZE}"
 
-mv "${DEST}.tmp" "${DEST}"
+# -f: the snapshot store hard-links the old disk and makes it 0444, and mv
+# would otherwise stop to ask before replacing a read-only file.
+mv -f "${DEST}.tmp" "${DEST}"
 echo "${ALPINE_VERSION}" > "${OUT}/rootfs.VERSION"
 
 # How much room is left on the disk? (dumpe2fs reads the image file; no
