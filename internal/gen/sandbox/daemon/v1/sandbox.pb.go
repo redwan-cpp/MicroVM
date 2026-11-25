@@ -234,6 +234,67 @@ func (Mode) EnumDescriptor() ([]byte, []int) {
 	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{2}
 }
 
+// HostKind says whether the daemon's host is a physical machine or
+// itself a VM. Timings measured inside a VM (nested virtualization) are
+// not those of a physical machine, so they are always labelled.
+type HostKind int32
+
+const (
+	// HOST_KIND_UNSPECIFIED is never sent.
+	HostKind_HOST_KIND_UNSPECIFIED HostKind = 0
+	// HOST_KIND_UNKNOWN: the daemon could not tell.
+	HostKind_HOST_KIND_UNKNOWN HostKind = 1
+	// HOST_KIND_PHYSICAL: no sign of a hypervisor, neither the CPU's
+	// hypervisor flag nor a virtual machine's firmware.
+	HostKind_HOST_KIND_PHYSICAL HostKind = 2
+	// HOST_KIND_VIRTUAL: the host is itself a VM, so its microVMs run
+	// under nested virtualization.
+	HostKind_HOST_KIND_VIRTUAL HostKind = 3
+)
+
+// Enum value maps for HostKind.
+var (
+	HostKind_name = map[int32]string{
+		0: "HOST_KIND_UNSPECIFIED",
+		1: "HOST_KIND_UNKNOWN",
+		2: "HOST_KIND_PHYSICAL",
+		3: "HOST_KIND_VIRTUAL",
+	}
+	HostKind_value = map[string]int32{
+		"HOST_KIND_UNSPECIFIED": 0,
+		"HOST_KIND_UNKNOWN":     1,
+		"HOST_KIND_PHYSICAL":    2,
+		"HOST_KIND_VIRTUAL":     3,
+	}
+)
+
+func (x HostKind) Enum() *HostKind {
+	p := new(HostKind)
+	*p = x
+	return p
+}
+
+func (x HostKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HostKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_sandbox_daemon_v1_sandbox_proto_enumTypes[3].Descriptor()
+}
+
+func (HostKind) Type() protoreflect.EnumType {
+	return &file_sandbox_daemon_v1_sandbox_proto_enumTypes[3]
+}
+
+func (x HostKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HostKind.Descriptor instead.
+func (HostKind) EnumDescriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{3}
+}
+
 // RunRequest describes one run. Fields this version does not know are
 // rejected (InvalidArgument), never ignored.
 type RunRequest struct {
@@ -470,7 +531,10 @@ type StateChange struct {
 	At *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=at,proto3" json:"at,omitempty"`
 	// detail says why, for example the error that made a run fail. It may
 	// quote text from the guest, with control characters removed.
-	Detail        string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	Detail string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	// run_id names the run, so that the caller of Run knows it from the
+	// first event (PENDING) on, not only from the result.
+	RunId         string `protobuf:"bytes,4,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -522,6 +586,13 @@ func (x *StateChange) GetAt() *timestamppb.Timestamp {
 func (x *StateChange) GetDetail() string {
 	if x != nil {
 		return x.Detail
+	}
+	return ""
+}
+
+func (x *StateChange) GetRunId() string {
+	if x != nil {
+		return x.RunId
 	}
 	return ""
 }
@@ -930,7 +1001,11 @@ type RunInfo struct {
 	// transitions are all state changes so far, oldest first.
 	Transitions []*StateChange `protobuf:"bytes,8,rep,name=transitions,proto3" json:"transitions,omitempty"`
 	// result is set once the run is DONE or FAILED.
-	Result        *RunResult `protobuf:"bytes,9,opt,name=result,proto3" json:"result,omitempty"`
+	Result *RunResult `protobuf:"bytes,9,opt,name=result,proto3" json:"result,omitempty"`
+	// jailed_uid is the UID the run's Firecracker runs as, in jailer mode
+	// once the run has a slot (70000 + the slot); 0 in rootless mode and
+	// before that.
+	JailedUid     uint32 `protobuf:"varint,10,opt,name=jailed_uid,json=jailedUid,proto3" json:"jailed_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1026,6 +1101,13 @@ func (x *RunInfo) GetResult() *RunResult {
 		return x.Result
 	}
 	return nil
+}
+
+func (x *RunInfo) GetJailedUid() uint32 {
+	if x != nil {
+		return x.JailedUid
+	}
+	return 0
 }
 
 // LogsRequest names one run.
@@ -1367,6 +1449,583 @@ func (x *GetResponse) GetRun() *RunInfo {
 	return nil
 }
 
+// InfoRequest asks the daemon to describe itself.
+type InfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InfoRequest) Reset() {
+	*x = InfoRequest{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InfoRequest) ProtoMessage() {}
+
+func (x *InfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
+func (*InfoRequest) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{13}
+}
+
+// InfoResponse describes the daemon.
+type InfoResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// mode is how every clone is confined.
+	Mode Mode `protobuf:"varint,1,opt,name=mode,proto3,enum=sandbox.daemon.v1.Mode" json:"mode,omitempty"`
+	// daemon_version is the sandboxd build, for example
+	// "sandboxd v0.1.0 (commit 1a2b3c4, go1.27.3 linux/amd64)".
+	DaemonVersion string `protobuf:"bytes,2,opt,name=daemon_version,json=daemonVersion,proto3" json:"daemon_version,omitempty"`
+	// firecracker_version is the Firecracker the daemon runs, for example
+	// "v1.17.0".
+	FirecrackerVersion string `protobuf:"bytes,3,opt,name=firecracker_version,json=firecrackerVersion,proto3" json:"firecracker_version,omitempty"`
+	// arch is the host's CPU architecture: "x86_64" or "aarch64".
+	Arch string `protobuf:"bytes,4,opt,name=arch,proto3" json:"arch,omitempty"`
+	// max_concurrent is how many runs may have a clone at once.
+	MaxConcurrent uint32 `protobuf:"varint,5,opt,name=max_concurrent,json=maxConcurrent,proto3" json:"max_concurrent,omitempty"`
+	// max_pending is how many more may wait for a slot.
+	MaxPending uint32 `protobuf:"varint,6,opt,name=max_pending,json=maxPending,proto3" json:"max_pending,omitempty"`
+	// classes are the size classes that have a snapshot, smallest first.
+	Classes []*ClassInfo `protobuf:"bytes,7,rep,name=classes,proto3" json:"classes,omitempty"`
+	// host_kind says whether the daemon's host is itself a VM, as far as
+	// the daemon could tell when it started.
+	HostKind HostKind `protobuf:"varint,8,opt,name=host_kind,json=hostKind,proto3,enum=sandbox.daemon.v1.HostKind" json:"host_kind,omitempty"`
+	// host_detail says what host_kind is based on, for example "the CPU's
+	// hypervisor flag is set; firmware: QEMU".
+	HostDetail    string `protobuf:"bytes,9,opt,name=host_detail,json=hostDetail,proto3" json:"host_detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InfoResponse) Reset() {
+	*x = InfoResponse{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InfoResponse) ProtoMessage() {}
+
+func (x *InfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
+func (*InfoResponse) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *InfoResponse) GetMode() Mode {
+	if x != nil {
+		return x.Mode
+	}
+	return Mode_MODE_UNSPECIFIED
+}
+
+func (x *InfoResponse) GetDaemonVersion() string {
+	if x != nil {
+		return x.DaemonVersion
+	}
+	return ""
+}
+
+func (x *InfoResponse) GetFirecrackerVersion() string {
+	if x != nil {
+		return x.FirecrackerVersion
+	}
+	return ""
+}
+
+func (x *InfoResponse) GetArch() string {
+	if x != nil {
+		return x.Arch
+	}
+	return ""
+}
+
+func (x *InfoResponse) GetMaxConcurrent() uint32 {
+	if x != nil {
+		return x.MaxConcurrent
+	}
+	return 0
+}
+
+func (x *InfoResponse) GetMaxPending() uint32 {
+	if x != nil {
+		return x.MaxPending
+	}
+	return 0
+}
+
+func (x *InfoResponse) GetClasses() []*ClassInfo {
+	if x != nil {
+		return x.Classes
+	}
+	return nil
+}
+
+func (x *InfoResponse) GetHostKind() HostKind {
+	if x != nil {
+		return x.HostKind
+	}
+	return HostKind_HOST_KIND_UNSPECIFIED
+}
+
+func (x *InfoResponse) GetHostDetail() string {
+	if x != nil {
+		return x.HostDetail
+	}
+	return ""
+}
+
+// ClassInfo is one size class and the snapshot the daemon restores it
+// from.
+type ClassInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name is the class's name, for example "small".
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// vcpus, memory_mib and scratch_mib are its shape.
+	Vcpus      uint32 `protobuf:"varint,2,opt,name=vcpus,proto3" json:"vcpus,omitempty"`
+	MemoryMib  uint32 `protobuf:"varint,3,opt,name=memory_mib,json=memoryMib,proto3" json:"memory_mib,omitempty"`
+	ScratchMib uint32 `protobuf:"varint,4,opt,name=scratch_mib,json=scratchMib,proto3" json:"scratch_mib,omitempty"`
+	// snapshot_version names the snapshot, for example
+	// "20261124T090000Z-1a2b3c".
+	SnapshotVersion string `protobuf:"bytes,5,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	// snapshot_created_at is when it was made.
+	SnapshotCreatedAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=snapshot_created_at,json=snapshotCreatedAt,proto3" json:"snapshot_created_at,omitempty"`
+	// kernel_version is the guest kernel's release, for example "6.1.155".
+	KernelVersion string `protobuf:"bytes,7,opt,name=kernel_version,json=kernelVersion,proto3" json:"kernel_version,omitempty"`
+	// agent_version is the sandbox-agent in the snapshot.
+	AgentVersion string `protobuf:"bytes,8,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
+	// vmgenid is true if the guest kernel reseeds its random number
+	// generator by itself on every restore (VMGenID).
+	Vmgenid bool `protobuf:"varint,9,opt,name=vmgenid,proto3" json:"vmgenid,omitempty"`
+	// cold_boot_us is how long the VM the snapshot was made from took to
+	// boot, in microseconds, from InstanceStart to the agent's first
+	// answer, measured by make snapshots on this host: the reference a
+	// restore is compared with.
+	ColdBootUs    uint64 `protobuf:"varint,10,opt,name=cold_boot_us,json=coldBootUs,proto3" json:"cold_boot_us,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClassInfo) Reset() {
+	*x = ClassInfo{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClassInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClassInfo) ProtoMessage() {}
+
+func (x *ClassInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClassInfo.ProtoReflect.Descriptor instead.
+func (*ClassInfo) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ClassInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ClassInfo) GetVcpus() uint32 {
+	if x != nil {
+		return x.Vcpus
+	}
+	return 0
+}
+
+func (x *ClassInfo) GetMemoryMib() uint32 {
+	if x != nil {
+		return x.MemoryMib
+	}
+	return 0
+}
+
+func (x *ClassInfo) GetScratchMib() uint32 {
+	if x != nil {
+		return x.ScratchMib
+	}
+	return 0
+}
+
+func (x *ClassInfo) GetSnapshotVersion() string {
+	if x != nil {
+		return x.SnapshotVersion
+	}
+	return ""
+}
+
+func (x *ClassInfo) GetSnapshotCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.SnapshotCreatedAt
+	}
+	return nil
+}
+
+func (x *ClassInfo) GetKernelVersion() string {
+	if x != nil {
+		return x.KernelVersion
+	}
+	return ""
+}
+
+func (x *ClassInfo) GetAgentVersion() string {
+	if x != nil {
+		return x.AgentVersion
+	}
+	return ""
+}
+
+func (x *ClassInfo) GetVmgenid() bool {
+	if x != nil {
+		return x.Vmgenid
+	}
+	return false
+}
+
+func (x *ClassInfo) GetColdBootUs() uint64 {
+	if x != nil {
+		return x.ColdBootUs
+	}
+	return 0
+}
+
+// HostStatsRequest asks what the daemon's clones use now.
+type HostStatsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostStatsRequest) Reset() {
+	*x = HostStatsRequest{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostStatsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostStatsRequest) ProtoMessage() {}
+
+func (x *HostStatsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostStatsRequest.ProtoReflect.Descriptor instead.
+func (*HostStatsRequest) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{16}
+}
+
+// HostStatsResponse is what the daemon's clones use on the host, at one
+// moment.
+type HostStatsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// at is when the daemon looked.
+	At *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=at,proto3" json:"at,omitempty"`
+	// clones are the daemon's live clones: each run whose clone is
+	// restored and not yet being destroyed.
+	Clones []*CloneStats `protobuf:"bytes,2,rep,name=clones,proto3" json:"clones,omitempty"`
+	// firecracker_processes counts the processes whose working folder is
+	// in the state folder's runs/ or jail/, where every clone's
+	// Firecracker runs, in whatever state its run is (also while it is
+	// restored or destroyed, and one the daemon lost track of).
+	FirecrackerProcesses *Count `protobuf:"bytes,3,opt,name=firecracker_processes,json=firecrackerProcesses,proto3" json:"firecracker_processes,omitempty"`
+	// run_dirs counts the folders in runs/: one per rootless clone.
+	RunDirs *Count `protobuf:"bytes,4,opt,name=run_dirs,json=runDirs,proto3" json:"run_dirs,omitempty"`
+	// jail_dirs counts the folders in jail/firecracker/: one per jailed
+	// clone.
+	JailDirs *Count `protobuf:"bytes,5,opt,name=jail_dirs,json=jailDirs,proto3" json:"jail_dirs,omitempty"`
+	// cgroups counts the cgroups in the cgroup v2 folder microvm/: one per
+	// jailed clone.
+	Cgroups       *Count `protobuf:"bytes,6,opt,name=cgroups,proto3" json:"cgroups,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostStatsResponse) Reset() {
+	*x = HostStatsResponse{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostStatsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostStatsResponse) ProtoMessage() {}
+
+func (x *HostStatsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostStatsResponse.ProtoReflect.Descriptor instead.
+func (*HostStatsResponse) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *HostStatsResponse) GetAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.At
+	}
+	return nil
+}
+
+func (x *HostStatsResponse) GetClones() []*CloneStats {
+	if x != nil {
+		return x.Clones
+	}
+	return nil
+}
+
+func (x *HostStatsResponse) GetFirecrackerProcesses() *Count {
+	if x != nil {
+		return x.FirecrackerProcesses
+	}
+	return nil
+}
+
+func (x *HostStatsResponse) GetRunDirs() *Count {
+	if x != nil {
+		return x.RunDirs
+	}
+	return nil
+}
+
+func (x *HostStatsResponse) GetJailDirs() *Count {
+	if x != nil {
+		return x.JailDirs
+	}
+	return nil
+}
+
+func (x *HostStatsResponse) GetCgroups() *Count {
+	if x != nil {
+		return x.Cgroups
+	}
+	return nil
+}
+
+// Count is a number the daemon counted, or why it could not.
+type Count struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// n is the number.
+	N uint32 `protobuf:"varint,1,opt,name=n,proto3" json:"n,omitempty"`
+	// error says why n could not be counted. Then n is 0 and means
+	// nothing.
+	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Count) Reset() {
+	*x = Count{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Count) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Count) ProtoMessage() {}
+
+func (x *Count) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Count.ProtoReflect.Descriptor instead.
+func (*Count) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *Count) GetN() uint32 {
+	if x != nil {
+		return x.N
+	}
+	return 0
+}
+
+func (x *Count) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// CloneStats is one live clone.
+type CloneStats struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// run_id names its run.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// pid is its Firecracker's process ID.
+	Pid int32 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
+	// jailed_uid is the UID Firecracker runs as in jailer mode, else 0.
+	JailedUid uint32 `protobuf:"varint,3,opt,name=jailed_uid,json=jailedUid,proto3" json:"jailed_uid,omitempty"`
+	// rss_bytes is the process's resident memory: every page it has in
+	// RAM, shared ones counted in full (from /proc/<pid>/smaps_rollup).
+	RssBytes uint64 `protobuf:"varint,4,opt,name=rss_bytes,json=rssBytes,proto3" json:"rss_bytes,omitempty"`
+	// pss_bytes is its proportional share: a page shared by n processes
+	// counts 1/n. Clones restored from one snapshot share its memory
+	// file's pages until they write to them, so their PSS is below their
+	// RSS.
+	PssBytes uint64 `protobuf:"varint,5,opt,name=pss_bytes,json=pssBytes,proto3" json:"pss_bytes,omitempty"`
+	// memory_error says why rss_bytes and pss_bytes could not be read.
+	// Then both are 0 and mean nothing.
+	MemoryError   string `protobuf:"bytes,6,opt,name=memory_error,json=memoryError,proto3" json:"memory_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloneStats) Reset() {
+	*x = CloneStats{}
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloneStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloneStats) ProtoMessage() {}
+
+func (x *CloneStats) ProtoReflect() protoreflect.Message {
+	mi := &file_sandbox_daemon_v1_sandbox_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloneStats.ProtoReflect.Descriptor instead.
+func (*CloneStats) Descriptor() ([]byte, []int) {
+	return file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *CloneStats) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *CloneStats) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *CloneStats) GetJailedUid() uint32 {
+	if x != nil {
+		return x.JailedUid
+	}
+	return 0
+}
+
+func (x *CloneStats) GetRssBytes() uint64 {
+	if x != nil {
+		return x.RssBytes
+	}
+	return 0
+}
+
+func (x *CloneStats) GetPssBytes() uint64 {
+	if x != nil {
+		return x.PssBytes
+	}
+	return 0
+}
+
+func (x *CloneStats) GetMemoryError() string {
+	if x != nil {
+		return x.MemoryError
+	}
+	return ""
+}
+
 var File_sandbox_daemon_v1_sandbox_proto protoreflect.FileDescriptor
 
 const file_sandbox_daemon_v1_sandbox_proto_rawDesc = "" +
@@ -1390,11 +2049,12 @@ const file_sandbox_daemon_v1_sandbox_proto_rawDesc = "" +
 	"\x06stdout\x18\x02 \x01(\fH\x00R\x06stdout\x12\x18\n" +
 	"\x06stderr\x18\x03 \x01(\fH\x00R\x06stderr\x126\n" +
 	"\x06result\x18\x04 \x01(\v2\x1c.sandbox.daemon.v1.RunResultH\x00R\x06resultB\a\n" +
-	"\x05event\"\x84\x01\n" +
+	"\x05event\"\x9b\x01\n" +
 	"\vStateChange\x121\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1b.sandbox.daemon.v1.RunStateR\x05state\x12*\n" +
 	"\x02at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x89\x03\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\x12\x15\n" +
+	"\x06run_id\x18\x04 \x01(\tR\x05runId\"\x89\x03\n" +
 	"\tRunResult\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x124\n" +
 	"\aoutcome\x18\x02 \x01(\x0e2\x1a.sandbox.daemon.v1.OutcomeR\aoutcome\x12\x16\n" +
@@ -1430,7 +2090,7 @@ const file_sandbox_daemon_v1_sandbox_proto_rawDesc = "" +
 	"\vListRequest\x12\x10\n" +
 	"\x03all\x18\x01 \x01(\bR\x03all\">\n" +
 	"\fListResponse\x12.\n" +
-	"\x04runs\x18\x01 \x03(\v2\x1a.sandbox.daemon.v1.RunInfoR\x04runs\"\x85\x03\n" +
+	"\x04runs\x18\x01 \x03(\v2\x1a.sandbox.daemon.v1.RunInfoR\x04runs\"\xa4\x03\n" +
 	"\aRunInfo\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x121\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1b.sandbox.daemon.v1.RunStateR\x05state\x12\x1d\n" +
@@ -1443,7 +2103,10 @@ const file_sandbox_daemon_v1_sandbox_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12@\n" +
 	"\vtransitions\x18\b \x03(\v2\x1e.sandbox.daemon.v1.StateChangeR\vtransitions\x124\n" +
-	"\x06result\x18\t \x01(\v2\x1c.sandbox.daemon.v1.RunResultR\x06result\"$\n" +
+	"\x06result\x18\t \x01(\v2\x1c.sandbox.daemon.v1.RunResultR\x06result\x12\x1d\n" +
+	"\n" +
+	"jailed_uid\x18\n" +
+	" \x01(\rR\tjailedUid\"$\n" +
 	"\vLogsRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\x92\x02\n" +
 	"\fLogsResponse\x12\x15\n" +
@@ -1464,7 +2127,55 @@ const file_sandbox_daemon_v1_sandbox_proto_rawDesc = "" +
 	"GetRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\";\n" +
 	"\vGetResponse\x12,\n" +
-	"\x03run\x18\x01 \x01(\v2\x1a.sandbox.daemon.v1.RunInfoR\x03run*\xc6\x01\n" +
+	"\x03run\x18\x01 \x01(\v2\x1a.sandbox.daemon.v1.RunInfoR\x03run\"\r\n" +
+	"\vInfoRequest\"\x82\x03\n" +
+	"\fInfoResponse\x12+\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x17.sandbox.daemon.v1.ModeR\x04mode\x12%\n" +
+	"\x0edaemon_version\x18\x02 \x01(\tR\rdaemonVersion\x12/\n" +
+	"\x13firecracker_version\x18\x03 \x01(\tR\x12firecrackerVersion\x12\x12\n" +
+	"\x04arch\x18\x04 \x01(\tR\x04arch\x12%\n" +
+	"\x0emax_concurrent\x18\x05 \x01(\rR\rmaxConcurrent\x12\x1f\n" +
+	"\vmax_pending\x18\x06 \x01(\rR\n" +
+	"maxPending\x126\n" +
+	"\aclasses\x18\a \x03(\v2\x1c.sandbox.daemon.v1.ClassInfoR\aclasses\x128\n" +
+	"\thost_kind\x18\b \x01(\x0e2\x1b.sandbox.daemon.v1.HostKindR\bhostKind\x12\x1f\n" +
+	"\vhost_detail\x18\t \x01(\tR\n" +
+	"hostDetail\"\xf4\x02\n" +
+	"\tClassInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05vcpus\x18\x02 \x01(\rR\x05vcpus\x12\x1d\n" +
+	"\n" +
+	"memory_mib\x18\x03 \x01(\rR\tmemoryMib\x12\x1f\n" +
+	"\vscratch_mib\x18\x04 \x01(\rR\n" +
+	"scratchMib\x12)\n" +
+	"\x10snapshot_version\x18\x05 \x01(\tR\x0fsnapshotVersion\x12J\n" +
+	"\x13snapshot_created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x11snapshotCreatedAt\x12%\n" +
+	"\x0ekernel_version\x18\a \x01(\tR\rkernelVersion\x12#\n" +
+	"\ragent_version\x18\b \x01(\tR\fagentVersion\x12\x18\n" +
+	"\avmgenid\x18\t \x01(\bR\avmgenid\x12 \n" +
+	"\fcold_boot_us\x18\n" +
+	" \x01(\x04R\n" +
+	"coldBootUs\"\x12\n" +
+	"\x10HostStatsRequest\"\xe5\x02\n" +
+	"\x11HostStatsResponse\x12*\n" +
+	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x125\n" +
+	"\x06clones\x18\x02 \x03(\v2\x1d.sandbox.daemon.v1.CloneStatsR\x06clones\x12M\n" +
+	"\x15firecracker_processes\x18\x03 \x01(\v2\x18.sandbox.daemon.v1.CountR\x14firecrackerProcesses\x123\n" +
+	"\brun_dirs\x18\x04 \x01(\v2\x18.sandbox.daemon.v1.CountR\arunDirs\x125\n" +
+	"\tjail_dirs\x18\x05 \x01(\v2\x18.sandbox.daemon.v1.CountR\bjailDirs\x122\n" +
+	"\acgroups\x18\x06 \x01(\v2\x18.sandbox.daemon.v1.CountR\acgroups\"+\n" +
+	"\x05Count\x12\f\n" +
+	"\x01n\x18\x01 \x01(\rR\x01n\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xb1\x01\n" +
+	"\n" +
+	"CloneStats\x12\x15\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\x12\x1d\n" +
+	"\n" +
+	"jailed_uid\x18\x03 \x01(\rR\tjailedUid\x12\x1b\n" +
+	"\trss_bytes\x18\x04 \x01(\x04R\brssBytes\x12\x1b\n" +
+	"\tpss_bytes\x18\x05 \x01(\x04R\bpssBytes\x12!\n" +
+	"\fmemory_error\x18\x06 \x01(\tR\vmemoryError*\xc6\x01\n" +
 	"\bRunState\x12\x19\n" +
 	"\x15RUN_STATE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11RUN_STATE_PENDING\x10\x01\x12\x17\n" +
@@ -1483,12 +2194,19 @@ const file_sandbox_daemon_v1_sandbox_proto_rawDesc = "" +
 	"\x04Mode\x12\x14\n" +
 	"\x10MODE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rMODE_ROOTLESS\x10\x01\x12\x0f\n" +
-	"\vMODE_JAILER\x10\x022\xb0\x02\n" +
+	"\vMODE_JAILER\x10\x02*k\n" +
+	"\bHostKind\x12\x19\n" +
+	"\x15HOST_KIND_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11HOST_KIND_UNKNOWN\x10\x01\x12\x16\n" +
+	"\x12HOST_KIND_PHYSICAL\x10\x02\x12\x15\n" +
+	"\x11HOST_KIND_VIRTUAL\x10\x032\xd1\x03\n" +
 	"\x0eSandboxService\x12F\n" +
 	"\x03Run\x12\x1d.sandbox.daemon.v1.RunRequest\x1a\x1e.sandbox.daemon.v1.RunResponse0\x01\x12G\n" +
 	"\x04List\x12\x1e.sandbox.daemon.v1.ListRequest\x1a\x1f.sandbox.daemon.v1.ListResponse\x12G\n" +
 	"\x04Logs\x12\x1e.sandbox.daemon.v1.LogsRequest\x1a\x1f.sandbox.daemon.v1.LogsResponse\x12D\n" +
-	"\x03Get\x12\x1d.sandbox.daemon.v1.GetRequest\x1a\x1e.sandbox.daemon.v1.GetResponseB\xd2\x01\n" +
+	"\x03Get\x12\x1d.sandbox.daemon.v1.GetRequest\x1a\x1e.sandbox.daemon.v1.GetResponse\x12G\n" +
+	"\x04Info\x12\x1e.sandbox.daemon.v1.InfoRequest\x1a\x1f.sandbox.daemon.v1.InfoResponse\x12V\n" +
+	"\tHostStats\x12#.sandbox.daemon.v1.HostStatsRequest\x1a$.sandbox.daemon.v1.HostStatsResponseB\xd2\x01\n" +
 	"\x15com.sandbox.daemon.v1B\fSandboxProtoP\x01ZEgithub.com/redwan-cpp/MicroVM/internal/gen/sandbox/daemon/v1;daemonv1\xa2\x02\x03SDX\xaa\x02\x11Sandbox.Daemon.V1\xca\x02\x11Sandbox\\Daemon\\V1\xe2\x02\x1dSandbox\\Daemon\\V1\\GPBMetadata\xea\x02\x13Sandbox::Daemon::V1b\x06proto3"
 
 var (
@@ -1503,58 +2221,80 @@ func file_sandbox_daemon_v1_sandbox_proto_rawDescGZIP() []byte {
 	return file_sandbox_daemon_v1_sandbox_proto_rawDescData
 }
 
-var file_sandbox_daemon_v1_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_sandbox_daemon_v1_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_sandbox_daemon_v1_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_sandbox_daemon_v1_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_sandbox_daemon_v1_sandbox_proto_goTypes = []any{
 	(RunState)(0),                 // 0: sandbox.daemon.v1.RunState
 	(Outcome)(0),                  // 1: sandbox.daemon.v1.Outcome
 	(Mode)(0),                     // 2: sandbox.daemon.v1.Mode
-	(*RunRequest)(nil),            // 3: sandbox.daemon.v1.RunRequest
-	(*RunResponse)(nil),           // 4: sandbox.daemon.v1.RunResponse
-	(*StateChange)(nil),           // 5: sandbox.daemon.v1.StateChange
-	(*RunResult)(nil),             // 6: sandbox.daemon.v1.RunResult
-	(*Timings)(nil),               // 7: sandbox.daemon.v1.Timings
-	(*ListRequest)(nil),           // 8: sandbox.daemon.v1.ListRequest
-	(*ListResponse)(nil),          // 9: sandbox.daemon.v1.ListResponse
-	(*RunInfo)(nil),               // 10: sandbox.daemon.v1.RunInfo
-	(*LogsRequest)(nil),           // 11: sandbox.daemon.v1.LogsRequest
-	(*LogsResponse)(nil),          // 12: sandbox.daemon.v1.LogsResponse
-	(*OutputChunk)(nil),           // 13: sandbox.daemon.v1.OutputChunk
-	(*GetRequest)(nil),            // 14: sandbox.daemon.v1.GetRequest
-	(*GetResponse)(nil),           // 15: sandbox.daemon.v1.GetResponse
-	nil,                           // 16: sandbox.daemon.v1.RunRequest.EnvEntry
-	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
+	(HostKind)(0),                 // 3: sandbox.daemon.v1.HostKind
+	(*RunRequest)(nil),            // 4: sandbox.daemon.v1.RunRequest
+	(*RunResponse)(nil),           // 5: sandbox.daemon.v1.RunResponse
+	(*StateChange)(nil),           // 6: sandbox.daemon.v1.StateChange
+	(*RunResult)(nil),             // 7: sandbox.daemon.v1.RunResult
+	(*Timings)(nil),               // 8: sandbox.daemon.v1.Timings
+	(*ListRequest)(nil),           // 9: sandbox.daemon.v1.ListRequest
+	(*ListResponse)(nil),          // 10: sandbox.daemon.v1.ListResponse
+	(*RunInfo)(nil),               // 11: sandbox.daemon.v1.RunInfo
+	(*LogsRequest)(nil),           // 12: sandbox.daemon.v1.LogsRequest
+	(*LogsResponse)(nil),          // 13: sandbox.daemon.v1.LogsResponse
+	(*OutputChunk)(nil),           // 14: sandbox.daemon.v1.OutputChunk
+	(*GetRequest)(nil),            // 15: sandbox.daemon.v1.GetRequest
+	(*GetResponse)(nil),           // 16: sandbox.daemon.v1.GetResponse
+	(*InfoRequest)(nil),           // 17: sandbox.daemon.v1.InfoRequest
+	(*InfoResponse)(nil),          // 18: sandbox.daemon.v1.InfoResponse
+	(*ClassInfo)(nil),             // 19: sandbox.daemon.v1.ClassInfo
+	(*HostStatsRequest)(nil),      // 20: sandbox.daemon.v1.HostStatsRequest
+	(*HostStatsResponse)(nil),     // 21: sandbox.daemon.v1.HostStatsResponse
+	(*Count)(nil),                 // 22: sandbox.daemon.v1.Count
+	(*CloneStats)(nil),            // 23: sandbox.daemon.v1.CloneStats
+	nil,                           // 24: sandbox.daemon.v1.RunRequest.EnvEntry
+	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
 }
 var file_sandbox_daemon_v1_sandbox_proto_depIdxs = []int32{
-	16, // 0: sandbox.daemon.v1.RunRequest.env:type_name -> sandbox.daemon.v1.RunRequest.EnvEntry
-	5,  // 1: sandbox.daemon.v1.RunResponse.state:type_name -> sandbox.daemon.v1.StateChange
-	6,  // 2: sandbox.daemon.v1.RunResponse.result:type_name -> sandbox.daemon.v1.RunResult
+	24, // 0: sandbox.daemon.v1.RunRequest.env:type_name -> sandbox.daemon.v1.RunRequest.EnvEntry
+	6,  // 1: sandbox.daemon.v1.RunResponse.state:type_name -> sandbox.daemon.v1.StateChange
+	7,  // 2: sandbox.daemon.v1.RunResponse.result:type_name -> sandbox.daemon.v1.RunResult
 	0,  // 3: sandbox.daemon.v1.StateChange.state:type_name -> sandbox.daemon.v1.RunState
-	17, // 4: sandbox.daemon.v1.StateChange.at:type_name -> google.protobuf.Timestamp
+	25, // 4: sandbox.daemon.v1.StateChange.at:type_name -> google.protobuf.Timestamp
 	1,  // 5: sandbox.daemon.v1.RunResult.outcome:type_name -> sandbox.daemon.v1.Outcome
 	2,  // 6: sandbox.daemon.v1.RunResult.mode:type_name -> sandbox.daemon.v1.Mode
-	7,  // 7: sandbox.daemon.v1.RunResult.timings:type_name -> sandbox.daemon.v1.Timings
-	10, // 8: sandbox.daemon.v1.ListResponse.runs:type_name -> sandbox.daemon.v1.RunInfo
+	8,  // 7: sandbox.daemon.v1.RunResult.timings:type_name -> sandbox.daemon.v1.Timings
+	11, // 8: sandbox.daemon.v1.ListResponse.runs:type_name -> sandbox.daemon.v1.RunInfo
 	0,  // 9: sandbox.daemon.v1.RunInfo.state:type_name -> sandbox.daemon.v1.RunState
 	2,  // 10: sandbox.daemon.v1.RunInfo.mode:type_name -> sandbox.daemon.v1.Mode
-	17, // 11: sandbox.daemon.v1.RunInfo.created_at:type_name -> google.protobuf.Timestamp
-	5,  // 12: sandbox.daemon.v1.RunInfo.transitions:type_name -> sandbox.daemon.v1.StateChange
-	6,  // 13: sandbox.daemon.v1.RunInfo.result:type_name -> sandbox.daemon.v1.RunResult
-	13, // 14: sandbox.daemon.v1.LogsResponse.chunks:type_name -> sandbox.daemon.v1.OutputChunk
-	10, // 15: sandbox.daemon.v1.GetResponse.run:type_name -> sandbox.daemon.v1.RunInfo
-	3,  // 16: sandbox.daemon.v1.SandboxService.Run:input_type -> sandbox.daemon.v1.RunRequest
-	8,  // 17: sandbox.daemon.v1.SandboxService.List:input_type -> sandbox.daemon.v1.ListRequest
-	11, // 18: sandbox.daemon.v1.SandboxService.Logs:input_type -> sandbox.daemon.v1.LogsRequest
-	14, // 19: sandbox.daemon.v1.SandboxService.Get:input_type -> sandbox.daemon.v1.GetRequest
-	4,  // 20: sandbox.daemon.v1.SandboxService.Run:output_type -> sandbox.daemon.v1.RunResponse
-	9,  // 21: sandbox.daemon.v1.SandboxService.List:output_type -> sandbox.daemon.v1.ListResponse
-	12, // 22: sandbox.daemon.v1.SandboxService.Logs:output_type -> sandbox.daemon.v1.LogsResponse
-	15, // 23: sandbox.daemon.v1.SandboxService.Get:output_type -> sandbox.daemon.v1.GetResponse
-	20, // [20:24] is the sub-list for method output_type
-	16, // [16:20] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	25, // 11: sandbox.daemon.v1.RunInfo.created_at:type_name -> google.protobuf.Timestamp
+	6,  // 12: sandbox.daemon.v1.RunInfo.transitions:type_name -> sandbox.daemon.v1.StateChange
+	7,  // 13: sandbox.daemon.v1.RunInfo.result:type_name -> sandbox.daemon.v1.RunResult
+	14, // 14: sandbox.daemon.v1.LogsResponse.chunks:type_name -> sandbox.daemon.v1.OutputChunk
+	11, // 15: sandbox.daemon.v1.GetResponse.run:type_name -> sandbox.daemon.v1.RunInfo
+	2,  // 16: sandbox.daemon.v1.InfoResponse.mode:type_name -> sandbox.daemon.v1.Mode
+	19, // 17: sandbox.daemon.v1.InfoResponse.classes:type_name -> sandbox.daemon.v1.ClassInfo
+	3,  // 18: sandbox.daemon.v1.InfoResponse.host_kind:type_name -> sandbox.daemon.v1.HostKind
+	25, // 19: sandbox.daemon.v1.ClassInfo.snapshot_created_at:type_name -> google.protobuf.Timestamp
+	25, // 20: sandbox.daemon.v1.HostStatsResponse.at:type_name -> google.protobuf.Timestamp
+	23, // 21: sandbox.daemon.v1.HostStatsResponse.clones:type_name -> sandbox.daemon.v1.CloneStats
+	22, // 22: sandbox.daemon.v1.HostStatsResponse.firecracker_processes:type_name -> sandbox.daemon.v1.Count
+	22, // 23: sandbox.daemon.v1.HostStatsResponse.run_dirs:type_name -> sandbox.daemon.v1.Count
+	22, // 24: sandbox.daemon.v1.HostStatsResponse.jail_dirs:type_name -> sandbox.daemon.v1.Count
+	22, // 25: sandbox.daemon.v1.HostStatsResponse.cgroups:type_name -> sandbox.daemon.v1.Count
+	4,  // 26: sandbox.daemon.v1.SandboxService.Run:input_type -> sandbox.daemon.v1.RunRequest
+	9,  // 27: sandbox.daemon.v1.SandboxService.List:input_type -> sandbox.daemon.v1.ListRequest
+	12, // 28: sandbox.daemon.v1.SandboxService.Logs:input_type -> sandbox.daemon.v1.LogsRequest
+	15, // 29: sandbox.daemon.v1.SandboxService.Get:input_type -> sandbox.daemon.v1.GetRequest
+	17, // 30: sandbox.daemon.v1.SandboxService.Info:input_type -> sandbox.daemon.v1.InfoRequest
+	20, // 31: sandbox.daemon.v1.SandboxService.HostStats:input_type -> sandbox.daemon.v1.HostStatsRequest
+	5,  // 32: sandbox.daemon.v1.SandboxService.Run:output_type -> sandbox.daemon.v1.RunResponse
+	10, // 33: sandbox.daemon.v1.SandboxService.List:output_type -> sandbox.daemon.v1.ListResponse
+	13, // 34: sandbox.daemon.v1.SandboxService.Logs:output_type -> sandbox.daemon.v1.LogsResponse
+	16, // 35: sandbox.daemon.v1.SandboxService.Get:output_type -> sandbox.daemon.v1.GetResponse
+	18, // 36: sandbox.daemon.v1.SandboxService.Info:output_type -> sandbox.daemon.v1.InfoResponse
+	21, // 37: sandbox.daemon.v1.SandboxService.HostStats:output_type -> sandbox.daemon.v1.HostStatsResponse
+	32, // [32:38] is the sub-list for method output_type
+	26, // [26:32] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_sandbox_daemon_v1_sandbox_proto_init() }
@@ -1577,8 +2317,8 @@ func file_sandbox_daemon_v1_sandbox_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sandbox_daemon_v1_sandbox_proto_rawDesc), len(file_sandbox_daemon_v1_sandbox_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   14,
+			NumEnums:      4,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

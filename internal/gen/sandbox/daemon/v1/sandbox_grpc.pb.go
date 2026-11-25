@@ -33,10 +33,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SandboxService_Run_FullMethodName  = "/sandbox.daemon.v1.SandboxService/Run"
-	SandboxService_List_FullMethodName = "/sandbox.daemon.v1.SandboxService/List"
-	SandboxService_Logs_FullMethodName = "/sandbox.daemon.v1.SandboxService/Logs"
-	SandboxService_Get_FullMethodName  = "/sandbox.daemon.v1.SandboxService/Get"
+	SandboxService_Run_FullMethodName       = "/sandbox.daemon.v1.SandboxService/Run"
+	SandboxService_List_FullMethodName      = "/sandbox.daemon.v1.SandboxService/List"
+	SandboxService_Logs_FullMethodName      = "/sandbox.daemon.v1.SandboxService/Logs"
+	SandboxService_Get_FullMethodName       = "/sandbox.daemon.v1.SandboxService/Get"
+	SandboxService_Info_FullMethodName      = "/sandbox.daemon.v1.SandboxService/Info"
+	SandboxService_HostStats_FullMethodName = "/sandbox.daemon.v1.SandboxService/HostStats"
 )
 
 // SandboxServiceClient is the client API for SandboxService service.
@@ -57,6 +59,17 @@ type SandboxServiceClient interface {
 	Logs(ctx context.Context, in *LogsRequest, opts ...grpc.CallOption) (*LogsResponse, error)
 	// Get returns one run, with all its state changes and its result.
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	// Info describes the daemon: its mode, versions and limits, the host's
+	// architecture and whether the host is itself a VM, and the size
+	// classes it can restore, each with the cold boot measured when its
+	// snapshot was made. It changes nothing.
+	Info(ctx context.Context, in *InfoRequest, opts ...grpc.CallOption) (*InfoResponse, error)
+	// HostStats reports what the daemon's clones use on the host right
+	// now: each live clone's Firecracker process and its memory, and what
+	// exists in the daemon's state folder (run folders, jails) and its
+	// cgroups. It looks only at the daemon's own clones and state folder,
+	// and changes nothing.
+	HostStats(ctx context.Context, in *HostStatsRequest, opts ...grpc.CallOption) (*HostStatsResponse, error)
 }
 
 type sandboxServiceClient struct {
@@ -116,6 +129,26 @@ func (c *sandboxServiceClient) Get(ctx context.Context, in *GetRequest, opts ...
 	return out, nil
 }
 
+func (c *sandboxServiceClient) Info(ctx context.Context, in *InfoRequest, opts ...grpc.CallOption) (*InfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InfoResponse)
+	err := c.cc.Invoke(ctx, SandboxService_Info_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxServiceClient) HostStats(ctx context.Context, in *HostStatsRequest, opts ...grpc.CallOption) (*HostStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HostStatsResponse)
+	err := c.cc.Invoke(ctx, SandboxService_HostStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SandboxServiceServer is the server API for SandboxService service.
 // All implementations must embed UnimplementedSandboxServiceServer
 // for forward compatibility.
@@ -134,6 +167,17 @@ type SandboxServiceServer interface {
 	Logs(context.Context, *LogsRequest) (*LogsResponse, error)
 	// Get returns one run, with all its state changes and its result.
 	Get(context.Context, *GetRequest) (*GetResponse, error)
+	// Info describes the daemon: its mode, versions and limits, the host's
+	// architecture and whether the host is itself a VM, and the size
+	// classes it can restore, each with the cold boot measured when its
+	// snapshot was made. It changes nothing.
+	Info(context.Context, *InfoRequest) (*InfoResponse, error)
+	// HostStats reports what the daemon's clones use on the host right
+	// now: each live clone's Firecracker process and its memory, and what
+	// exists in the daemon's state folder (run folders, jails) and its
+	// cgroups. It looks only at the daemon's own clones and state folder,
+	// and changes nothing.
+	HostStats(context.Context, *HostStatsRequest) (*HostStatsResponse, error)
 	mustEmbedUnimplementedSandboxServiceServer()
 }
 
@@ -155,6 +199,12 @@ func (UnimplementedSandboxServiceServer) Logs(context.Context, *LogsRequest) (*L
 }
 func (UnimplementedSandboxServiceServer) Get(context.Context, *GetRequest) (*GetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Get not implemented")
+}
+func (UnimplementedSandboxServiceServer) Info(context.Context, *InfoRequest) (*InfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Info not implemented")
+}
+func (UnimplementedSandboxServiceServer) HostStats(context.Context, *HostStatsRequest) (*HostStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HostStats not implemented")
 }
 func (UnimplementedSandboxServiceServer) mustEmbedUnimplementedSandboxServiceServer() {}
 func (UnimplementedSandboxServiceServer) testEmbeddedByValue()                        {}
@@ -242,6 +292,42 @@ func _SandboxService_Get_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxService_Info_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxServiceServer).Info(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxService_Info_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxServiceServer).Info(ctx, req.(*InfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxService_HostStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HostStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxServiceServer).HostStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxService_HostStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxServiceServer).HostStats(ctx, req.(*HostStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SandboxService_ServiceDesc is the grpc.ServiceDesc for SandboxService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -260,6 +346,14 @@ var SandboxService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Get",
 			Handler:    _SandboxService_Get_Handler,
+		},
+		{
+			MethodName: "Info",
+			Handler:    _SandboxService_Info_Handler,
+		},
+		{
+			MethodName: "HostStats",
+			Handler:    _SandboxService_HostStats_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
