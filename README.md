@@ -4,7 +4,7 @@
 
 AI agents and scripts run code with our permissions, and one bad command can delete files or leak secrets. Containers share the host kernel, so a kernel bug can break out of them. Full VMs are safe but take seconds to start. MicroVM Sandbox gives **every run its own hardware-isolated microVM**. It restores the VM from a copy-on-write snapshot, applies a per-run policy (CPU, memory, files, network), runs the command and destroys everything afterwards.
 
-> **Status:** week 4 of 13, **Demo 1**. `sandboxd` restores a clone of a base snapshot for every `sandboxctl run` in about 20 ms (a cold boot takes about 80 ms to reach the agent), gives it its own scratch disk at `/work`, streams the command's output, destroys the clone and writes a hash-chained audit record. Three clones run at once from one snapshot, each seeing only its own writes (`make demo1`, and as a test in `make e2e`). Clones run rootless by default. Jailer mode (chroot, its own UID and cgroup per clone) needs root: the week-3 restore passed one manual root run on the dev machine on 2026-11-18 (51.4 ms); the week-4 jailer-mode daemon is built and tested to skip without root, and still needs its first root run ([ADR-0005](docs/adr/0005-rootless-and-jailer-modes.md)). The feature list is frozen; see the [build plan](docs/build-plan.md).
+> **Status:** week 4 of 13, **Demo 1**. `sandboxd` restores a clone of a base snapshot for every `sandboxctl run` in about 20 ms (a cold boot takes about 80 ms to reach the agent), gives it its own scratch disk at `/work`, streams the command's output, destroys the clone and writes a hash-chained audit record. Three clones run at once from one snapshot, each seeing only its own writes (`make demo1`, and as a test in `make e2e`). Clones run rootless by default. Jailer mode (chroot, its own UID and cgroup per clone) needs root: several manual root runs of the jailer tests on the dev machine on 2026-11-24 passed, a jailed restore in 29–61 ms and Demo 1 through a jailer-mode daemon with three jailed UIDs; they are by hand, never in CI, and `scripts/demo1.sh --jailer` has not been run end to end yet ([ADR-0005](docs/adr/0005-rootless-and-jailer-modes.md)). The feature list is frozen; see the [build plan](docs/build-plan.md).
 > **Security:** research and teaching project, **not audited**. See [SECURITY.md](SECURITY.md).
 
 ## How it works
@@ -31,6 +31,7 @@ flowchart LR
 ```bash
 make firecracker guest snapshots      # once: Firecracker, the guest image, the base snapshots (as yourself)
 bin/sandboxd serve &                  # the daemon, rootless, on $XDG_RUNTIME_DIR/sandboxd/sandboxd.sock
+until bin/sandboxctl ps > /dev/null 2>&1; do sleep 0.1; done   # wait until it answers (it hashes the store first)
 bin/sandboxctl run -- sh -c 'echo hello from a microVM > /work/note; cat note'
 bin/sandboxctl run -v --timeout 5s -- sh -c 'uname -r; ls /work'   # -v: every state change and the timings
 bin/sandboxctl ps --all               # active and recent runs
@@ -89,7 +90,7 @@ scripts/demo1.sh --jailer
 
 The jailer-mode daemon listens on `/run/sandboxd/sandboxd.sock` (0660, group `sandbox` if it exists, else `--socket-group`, else root only; [ADR-0006](docs/adr/0006-daemon-socket-and-state-ownership.md)) and gives the audit log and the lock file in the state folder to the folder's owner, so `sandboxctl audit verify` and rootless mode keep working as you.
 
-The last run (2026-11-18, dev machine) passed: restore in jailer mode took 51.4 ms (prepare 0.4, process start 36.6, LoadSnapshot 7.2, agent ready 6.0, de-twin 1.2 ms), against about 15–20 ms rootless.
+The last root runs (2026-11-24, dev machine, binaries built from 9245d10; run several times) all passed: `TestJailerRestore` with every subtest (the jailed UID, no supplementary groups, the cgroup limits, read-only links, `/work`), and `TestJailerDemo1`, three clones at once through a jailer-mode daemon, as UIDs 70000, 70001 and 70002, each in its own cgroup, all exit 0, about 2.2 s wall time for three 2 s commands. Jailed restores took 28.6–60.5 ms in all across the runs, and each Demo 1 clone's restore 40–48 ms (three at once), against about 18–23 ms rootless; most of the difference is the jailer's own start. The latest log is `guest/out/jailer-test.log` (not committed): restore 37.6 ms (prepare 0.7, scratch 0.2, process start 22.6, LoadSnapshot 7.4, agent ready 5.6, de-twin 1.1 ms); Demo 1 restores 46.7–47.4 ms, wall time 2.19 s. `scripts/demo1.sh --jailer` still needs its first run end to end.
 
 If a root run is interrupted (Ctrl-C, a timeout) before it cleans up, finish by hand. `<id>` is the `r-…` folder under `guest/out/state/jail/firecracker/`:
 

@@ -35,7 +35,7 @@ The week-3 spike ([`test/e2e/spike_test.go`](../../test/e2e/spike_test.go)) chec
 **Good:**
 - Everything except one test runs without root: building, unit tests, `make e2e`, CI.
 - One snapshot per size class serves both modes, so there is nothing to keep in sync.
-- Restores are fast in both modes: no copying, only hard links. On the dev machine: about 15–20 ms rootless, and 51.4 ms in jailer mode in one manual root run (2026-11-18), most of it the jailer's own start (36.6 ms).
+- Restores are fast in both modes: no copying, only hard links. On the dev machine: about 15–20 ms rootless, and 51.4 ms in jailer mode in one manual root run (2026-11-18), most of it the jailer's own start (36.6 ms); 28.6–60.5 ms in the week-4 root runs (2026-11-24), and 40–48 ms per clone with three jailed clones at once.
 
 **Bad:**
 - **Rootless mode is weaker.** If code escapes the VM into Firecracker (T9), it runs as our user: it can read our home folder (T1), the base snapshots and the other clones' files (T3). Firecracker's own seccomp filters still apply, but there is no chroot, UID drop, namespace or cgroup around it. The threat model says so.

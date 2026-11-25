@@ -79,7 +79,7 @@ The log **fails closed**. If the chain is broken when the daemon starts, it refu
 ## 6. When things go away
 
 - **You press Ctrl-C** (or your program dies): the call ends, the daemon stops the run, destroys the clone and writes a FAILED record: "the caller went away".
-- **The daemon is stopped** (SIGTERM, Ctrl-C): it accepts no new runs, stops the running ones (each still destroyed and recorded), closes the log and removes its socket, within 10 seconds.
+- **The daemon is stopped** (SIGTERM, Ctrl-C): it accepts no new runs, stops the running ones (each still destroyed and recorded), closes the log and removes its socket, within 10 seconds. That bound is firm: a run still in STOPPING when it runs out (a clone that will not die, say) can lose its audit record, because the log is closed under it. The daemon logs that loudly ("runs still stopping", "AUDIT RECORD NOT WRITTEN"), and its exit code says the shutdown failed.
 - **The daemon crashes**: in rootless mode the kernel kills every Firecracker it started (the parent-death signal, doc 10). In jailer mode that signal is gone, and a chroot or cgroup may stay behind; the **reconciler** in week 7 cleans those up when the daemon starts again. What the daemon keeps in memory, the last 100 runs and their output for `ps` and `logs`, is gone after a restart; the audit log is what lasts.
 
 ## 7. Try it
@@ -90,9 +90,10 @@ make demo1
 👀 The whole of Demo 1: the daemon starts, three clones run at once (each sees only its own secret in `/work`), then `ps`, `logs`, `audit verify`, and nothing left behind.
 
 ```bash
-bin/sandboxd serve & sleep 1; bin/sandboxctl run -v -- sh -c 'pwd; ls'; kill %1
+bin/sandboxd serve &  until bin/sandboxctl ps > /dev/null 2>&1; do sleep 0.1; done
+bin/sandboxctl run -v -- sh -c 'pwd; ls'; kill %1
 ```
-👀 Every state change with its time, then `/work` and `lost+found` (the only thing on a fresh ext4 disk), the outcome and the phase timings.
+👀 The daemon starts (the loop waits until it answers: it checks every snapshot hash first). Then every state change with its time, `/work` and `lost+found` (the only thing on a fresh ext4 disk), the outcome and the phase timings.
 
 ```bash
 bin/sandboxctl audit verify && tail -n 1 guest/out/state/audit/audit.jsonl

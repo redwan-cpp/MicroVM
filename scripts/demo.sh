@@ -126,9 +126,10 @@ cat <<EOF
   ${G}✓ week 1${N}   pinned guest kernel, rootless root disk, boot by hand through the API
   ${G}✓ week 2${N}   sandbox-agent inside the VM, gRPC over vsock; the host enforces every limit (make e2e)
   ${G}✓ week 3${N}   snapshots: restore in ~15-20 ms instead of booting; jailer mode (chroot, UID drop,
-             cgroups): one manual root run passed on the dev machine, 51 ms per restore (not in CI)
+             cgroups): manual root runs passed on the dev machine, 29-61 ms per restore (not in CI)
   ${G}✓ week 4${N}   ${B}Demo 1${N}: sandboxd + sandboxctl, three clones at once from one snapshot, each with
-             its own /work disk; run state machine; hash-chained audit log (make demo1)
+             its own /work disk; run state machine; hash-chained audit log (make demo1);
+             in jailer mode as three jailed UIDs in the root runs of make e2e-jailer
     week 8   ${B}Demo 2${N}: networking off by default, policies change the limits
     week 9   escape-test suite: every attempt blocked or logged
     week 10  benchmarks: p50/p99 restore latency, clones per GB
