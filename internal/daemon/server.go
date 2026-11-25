@@ -321,6 +321,12 @@ func (s *Server) execute(ctx context.Context, e *runEntry, req *daemonv1.RunRequ
 		s.pool.release(slot)
 		err = context.Cause(ctx)
 	}
+	if err == nil && s.cfg.Audit.Failed() != nil {
+		// The audit log broke while this run waited: admit's check is
+		// not enough, since no run may start without a working log.
+		s.pool.release(slot)
+		err = fmt.Errorf("the audit log could not be written, so no runs start until the daemon restarts: %w", s.cfg.Audit.Failed())
+	}
 	if err != nil {
 		sp.verdict = run.Failure(fmt.Errorf("while waiting for a slot: %w", err))
 		s.to(e, run.Stopping, detailOf(sp.verdict.Err))
@@ -424,7 +430,11 @@ func (s *Server) finish(e *runEntry, req *daemonv1.RunRequest, sp *span) {
 		// The run happened, but its record is not on disk: say so, and
 		// accept no more runs (admit checks Audit.Failed).
 		s.cfg.Logger.Printf("run %s: AUDIT RECORD NOT WRITTEN, accepting no more runs: %v", e.id, err)
-		v = run.Failure(fmt.Errorf("the audit record could not be written: %w", err))
+		if v.Outcome == run.FailedOutcome && v.Err != nil {
+			v = run.Failure(fmt.Errorf("%w; and the audit record could not be written: %w", v.Err, err))
+		} else {
+			v = run.Failure(fmt.Errorf("the audit record could not be written: %w", err))
+		}
 		final = run.Failed
 	}
 

@@ -771,6 +771,53 @@ func TestAuditFailureDuringARunFailsIt(t *testing.T) {
 	}
 }
 
+func TestAuditFailureFailsTheWaitingRuns(t *testing.T) {
+	// One run holds the only slot, one waits for it. The audit log breaks
+	// while they do: the waiting run must fail without ever getting a
+	// clone, since no run may start without a working log.
+	h := newHarness(t, 1, 2)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	type outcome struct {
+		got *collected
+		err error
+	}
+	results := make(chan outcome, 2)
+	start := func() {
+		go func() {
+			got, err := runToEnd(t, h.client, &daemonv1.RunRequest{Argv: []string{"hold"}})
+			results <- outcome{got, err}
+		}()
+	}
+	start()
+	waitFor(t, "the first run's clone", func() bool { active, _, _, _ := h.cloner.stats(); return active == 1 })
+	start()
+	waitFor(t, "the second run in PENDING", func() bool {
+		list, err := h.client.List(ctx, &daemonv1.ListRequest{})
+		return err == nil && len(list.GetRuns()) == 2 && list.GetRuns()[1].GetState() == daemonv1.RunState_RUN_STATE_PENDING
+	})
+	_ = h.audit.Close()  // the log fails
+	close(h.cloner.gate) // the first run's command finishes and frees the slot
+
+	for range 2 {
+		o := <-results
+		if o.err != nil {
+			t.Fatalf("run: %v", o.err)
+		}
+		if o.got.result.GetOutcome() != daemonv1.Outcome_OUTCOME_FAILED {
+			t.Errorf("result %v, want FAILED", o.got.result)
+		}
+		if equalStates(o.got.states, []daemonv1.RunState{daemonv1.RunState_RUN_STATE_PENDING,
+			daemonv1.RunState_RUN_STATE_STOPPING, daemonv1.RunState_RUN_STATE_FAILED}) &&
+			!strings.Contains(o.got.result.GetError(), "no runs start") {
+			t.Errorf("the waiting run failed with %q, want the audit log as the reason", o.got.result.GetError())
+		}
+	}
+	if _, _, restores, _ := h.cloner.stats(); restores != 1 {
+		t.Errorf("%d restores, want 1: the waiting run must never get a clone", restores)
+	}
+}
+
 func TestRegistryKeepsOutputBounded(t *testing.T) {
 	r := newRegistry(100, 250, 3)
 	newEntry := func(id string) *runEntry {
