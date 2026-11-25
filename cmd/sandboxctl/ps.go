@@ -76,6 +76,9 @@ func (c *client) ps(args []string) int {
 func (c *client) printRun(r *daemonv1.RunInfo) {
 	c.env.outf("run      %s\nstate    %s\nclass    %s\nmode     %s\ncaller   uid %d\ncommand  %s\n",
 		r.GetRunId(), stateName(r.GetState()), r.GetSizeClass(), modeName(r.GetMode()), r.GetCallerUid(), command(r.GetArgv(), 200))
+	if uid := r.GetJailedUid(); uid != 0 {
+		c.env.outf("jailed   uid %d\n", uid)
+	}
 	start := r.GetCreatedAt().AsTime()
 	c.env.outf("created  %s\n", start.Local().Format(time.RFC3339Nano))
 	for _, t := range r.GetTransitions() {

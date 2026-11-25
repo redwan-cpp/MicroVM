@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -65,6 +66,8 @@ type VM interface {
 	Exec(ctx context.Context, req *agentv1.ExecRequest, stdout, stderr io.Writer) (clone.ExecResult, error)
 	Timings() clone.Timings
 	Version() *snapshot.Version
+	// Pid is the clone's Firecracker process (HostStats reads its memory).
+	Pid() int
 	Destroy() error
 }
 
@@ -127,6 +130,10 @@ type Config struct {
 	MaxPending int
 	// Version is the daemon's build, recorded in the audit log.
 	Version string
+	// FirecrackerVersion is the Firecracker the clones run (Info).
+	FirecrackerVersion string
+	// Host is what DetectHost found (Info). The zero value says unknown.
+	Host HostKind
 	// Logger gets one line per finished run and every problem. nil means
 	// the standard logger.
 	Logger *log.Logger
@@ -136,9 +143,10 @@ type Config struct {
 type Server struct {
 	daemonv1.UnimplementedSandboxServiceServer
 
-	cfg  Config
-	runs *registry
-	pool *slotPool
+	cfg   Config
+	runs  *registry
+	pool  *slotPool
+	stats *hostStats
 
 	base     context.Context // every run's parent; Shutdown cancels it
 	stopRuns context.CancelCauseFunc
@@ -159,6 +167,7 @@ func NewServer(cfg Config) *Server {
 		cfg:      cfg,
 		runs:     newRegistry(perRunOutput, outputBudget, maxRecent),
 		pool:     newSlotPool(cfg.MaxConcurrent),
+		stats:    &hostStats{procDir: "/proc"},
 		base:     base,
 		stopRuns: stop,
 	}
@@ -287,7 +296,7 @@ func (s *Server) admit(req *daemonv1.RunRequest, plan *runPlan, callerUID uint32
 		cancel:    cancel,
 	}
 	e.machine = run.NewMachine(func(t run.Transition) {
-		events.push(&daemonv1.RunResponse{Event: &daemonv1.RunResponse_State{State: transitionToProto(t)}})
+		events.push(&daemonv1.RunResponse{Event: &daemonv1.RunResponse_State{State: transitionToProto(e.id, t)}})
 	})
 	s.runs.add(e)
 	s.wg.Add(1)
@@ -341,6 +350,7 @@ func (s *Server) execute(ctx context.Context, e *runEntry, req *daemonv1.RunRequ
 	}
 	if s.cfg.Mode == clone.Jailer {
 		sp.jailedUID = s.cfg.FirstUID + slot
+		s.runs.setJailedUID(e, uint32(sp.jailedUID)) //nolint:gosec // G115: 70000 + a slot below 32
 	}
 
 	// RESTORING.
@@ -360,6 +370,7 @@ func (s *Server) execute(ctx context.Context, e *runEntry, req *daemonv1.RunRequ
 		return
 	}
 	sp.restored, sp.restore, sp.snapshot = true, vm.Timings(), vm.Version().ID
+	s.runs.setVM(e, vm) // HostStats sees it from now on
 
 	// MOUNTING, then RUNNING.
 	s.to(e, run.Mounting, "")
@@ -388,6 +399,7 @@ func (s *Server) execute(ctx context.Context, e *runEntry, req *daemonv1.RunRequ
 	// STOPPING: destroy the clone. Destroy takes no context: it must run
 	// to its end even when the run was cancelled, and bounds itself.
 	s.to(e, run.Stopping, detailOf(sp.verdict.Err))
+	s.runs.setVM(e, nil)
 	began = time.Now()
 	sp.destroyErr = vm.Destroy()
 	sp.destroy = time.Since(began)
@@ -593,6 +605,79 @@ func (s *Server) Get(_ context.Context, req *daemonv1.GetRequest) (*daemonv1.Get
 		return nil, err
 	}
 	return &daemonv1.GetResponse{Run: s.runs.info(e)}, nil
+}
+
+// Info describes the daemon (see the API).
+func (s *Server) Info(_ context.Context, req *daemonv1.InfoRequest) (*daemonv1.InfoResponse, error) {
+	if len(req.ProtoReflect().GetUnknown()) > 0 {
+		return nil, status.Error(codes.InvalidArgument, "the request has fields this daemon does not know")
+	}
+	host := s.cfg.Host
+	if host.Kind == daemonv1.HostKind_HOST_KIND_UNSPECIFIED {
+		host = HostKind{daemonv1.HostKind_HOST_KIND_UNKNOWN, "not looked at"}
+	}
+	arch, err := snapshot.HostArch()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	resp := &daemonv1.InfoResponse{
+		Mode:               modeToProto(s.cfg.Mode),
+		DaemonVersion:      s.cfg.Version,
+		FirecrackerVersion: s.cfg.FirecrackerVersion,
+		Arch:               arch,
+		MaxConcurrent:      uint32(max(s.cfg.MaxConcurrent, 0)), //nolint:gosec // G115: 1 to 32
+		MaxPending:         uint32(max(s.cfg.MaxPending, 0)),    //nolint:gosec // G115: 64
+		HostKind:           host.Kind,
+		HostDetail:         host.Detail,
+	}
+	for _, v := range s.cfg.Store.Classes() {
+		m := v.Manifest
+		resp.Classes = append(resp.Classes, &daemonv1.ClassInfo{
+			Name:              m.Class,
+			Vcpus:             uint32(max(m.VCPUs, 0)),      //nolint:gosec // G115: a class's shape
+			MemoryMib:         uint32(max(m.MemoryMiB, 0)),  //nolint:gosec // G115: a class's shape
+			ScratchMib:        uint32(max(m.ScratchMiB, 0)), //nolint:gosec // G115: a class's shape
+			SnapshotVersion:   v.ID,
+			SnapshotCreatedAt: timestamp(m.CreatedAt),
+			KernelVersion:     m.KernelVersion,
+			AgentVersion:      m.AgentVersion,
+			Vmgenid:           m.VMGenID,
+			ColdBootUs:        m.ColdBootUS,
+		})
+	}
+	return resp, nil
+}
+
+// HostStats reports what the daemon's clones use now (see the API). It
+// reads /proc and the state folder; one call runs at a time.
+func (s *Server) HostStats(ctx context.Context, req *daemonv1.HostStatsRequest) (*daemonv1.HostStatsResponse, error) {
+	if len(req.ProtoReflect().GetUnknown()) > 0 {
+		return nil, status.Error(codes.InvalidArgument, "the request has fields this daemon does not know")
+	}
+	h := s.stats
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	root := s.cfg.Store.Root()
+	resp := &daemonv1.HostStatsResponse{
+		At:                   timestamp(time.Now()),
+		FirecrackerProcesses: h.processesUnder(ctx, root.RunsDir(), root.JailDir()),
+		RunDirs:              countDir(root.RunsDir()),
+		JailDirs:             countDir(filepath.Join(root.JailDir(), "firecracker")),
+	}
+	if dir, err := h.cgroupParent(); err != nil {
+		resp.Cgroups = &daemonv1.Count{Error: "no cgroup v2: " + reason(err)}
+	} else {
+		resp.Cgroups = countSubdirs(dir)
+	}
+	for _, c := range s.runs.live() {
+		cs := &daemonv1.CloneStats{RunId: c.id, Pid: int32(c.pid), JailedUid: c.jailedUID} //nolint:gosec // G115: a PID
+		var err error
+		if cs.RssBytes, cs.PssBytes, err = h.memory(c.pid); err != nil {
+			cs.MemoryError = err.Error()
+		}
+		resp.Clones = append(resp.Clones, cs)
+	}
+	return resp, nil
 }
 
 // lookup finds the run a Logs or Get request names.

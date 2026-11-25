@@ -116,6 +116,9 @@ func (v *fakeVM) Timings() clone.Timings {
 
 func (v *fakeVM) Version() *snapshot.Version { return v.version }
 
+// Pid is this test process: HostStats can read its memory.
+func (v *fakeVM) Pid() int { return os.Getpid() }
+
 func (v *fakeVM) Destroy() error {
 	v.f.mu.Lock()
 	defer v.f.mu.Unlock()
@@ -190,7 +193,9 @@ func newFakeStore(t *testing.T) *snapshot.Store {
 		t.Fatal(err)
 	}
 	m := snapshot.Manifest{Format: snapshot.ManifestFormat, Arch: arch, Class: class.Name, VCPUs: class.VCPUs,
-		MemoryMiB: class.MemoryMiB, ScratchMiB: class.ScratchMiB, FirecrackerVersion: "v1.17.0"}
+		MemoryMiB: class.MemoryMiB, ScratchMiB: class.ScratchMiB, FirecrackerVersion: "v1.17.0",
+		KernelVersion: "6.1.155", AgentVersion: "sandbox-agent test", ColdBootUS: 81234, VMGenID: true,
+		CreatedAt: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)}
 	for name, sum := range map[string]*string{snapshot.StateName: &m.StateSHA256, snapshot.MemName: &m.MemSHA256,
 		snapshot.RootfsName: &m.RootfsSHA256, snapshot.ScratchName: &m.ScratchSHA256} {
 		content := []byte("fake " + name)
@@ -225,6 +230,13 @@ type harness struct {
 
 func newHarness(t *testing.T, maxConcurrent, maxPending int) *harness {
 	t.Helper()
+	return newHarnessIn(t, clone.Rootless, maxConcurrent, maxPending)
+}
+
+// newHarnessIn is newHarness in the given mode. Jailer mode needs no root
+// here: the fake cloner restores nothing.
+func newHarnessIn(t *testing.T, mode clone.Mode, maxConcurrent, maxPending int) *harness {
+	t.Helper()
 	store := newFakeStore(t)
 	h := &harness{cloner: newFakeCloner(store), logs: &syncWriter{}}
 	var err error
@@ -233,9 +245,10 @@ func newHarness(t *testing.T, maxConcurrent, maxPending int) *harness {
 	}
 	t.Cleanup(func() { _ = h.audit.Close() })
 	h.srv = NewServer(Config{
-		Store: store, Cloner: h.cloner, Audit: h.audit, Mode: clone.Rootless,
+		Store: store, Cloner: h.cloner, Audit: h.audit, Mode: mode, FirstUID: 70000,
 		MaxConcurrent: maxConcurrent, MaxPending: maxPending, Version: "sandboxd test",
-		Logger: log.New(h.logs, "", 0),
+		Logger: log.New(h.logs, "", 0), FirecrackerVersion: "v1.17.0",
+		Host: HostKind{daemonv1.HostKind_HOST_KIND_PHYSICAL, "test"},
 	})
 	sock := filepath.Join(store.Root().Dir(), "d.sock")
 	lis, err := net.Listen("unix", sock)
@@ -285,6 +298,7 @@ func (s *syncWriter) String() string {
 // collected is everything one Run stream delivered.
 type collected struct {
 	states         []daemonv1.RunState
+	stateIDs       []string // the run ID of each state change
 	stdout, stderr bytes.Buffer
 	order          []string // "out"/"err" per chunk
 	result         *daemonv1.RunResult
@@ -314,6 +328,7 @@ func runToEnd(t *testing.T, c daemonv1.SandboxServiceClient, req *daemonv1.RunRe
 		switch ev := msg.GetEvent().(type) {
 		case *daemonv1.RunResponse_State:
 			got.states = append(got.states, ev.State.GetState())
+			got.stateIDs = append(got.stateIDs, ev.State.GetRunId())
 		case *daemonv1.RunResponse_Stdout:
 			got.stdout.Write(ev.Stdout)
 			got.order = append(got.order, "out")
@@ -370,6 +385,12 @@ func TestRunStreamsEverythingInOrder(t *testing.T) {
 	}
 	if !equalStates(got.states, happyPath) {
 		t.Errorf("states %v, want %v", got.states, happyPath)
+	}
+	// Every state change names the run, PENDING included.
+	for i, id := range got.stateIDs {
+		if id != got.result.GetRunId() {
+			t.Errorf("state change %d (%v) names run %q, want %q", i, got.states[i], id, got.result.GetRunId())
+		}
 	}
 	if got.stdout.String() != "out1\nout2\n" || got.stderr.String() != "err\n" || strings.Join(got.order, ",") != "out,err,out" {
 		t.Errorf("output %q / %q in order %v", got.stdout.String(), got.stderr.String(), got.order)
@@ -1067,5 +1088,182 @@ func TestPeerCredsRefuseOtherConnections(t *testing.T) {
 	defer b.Close() //nolint:errcheck // a test pipe
 	if _, _, err := (peerCreds{}).ServerHandshake(a); err == nil {
 		t.Error("a non-Unix connection was accepted")
+	}
+}
+
+func TestInfo(t *testing.T) {
+	h := newHarness(t, 3, 7)
+	info, err := h.client.Info(t.Context(), &daemonv1.InfoRequest{})
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	arch, _ := snapshot.HostArch()
+	if info.GetMode() != daemonv1.Mode_MODE_ROOTLESS || info.GetDaemonVersion() != "sandboxd test" ||
+		info.GetFirecrackerVersion() != "v1.17.0" || info.GetArch() != arch || info.GetMaxConcurrent() != 3 ||
+		info.GetMaxPending() != 7 || info.GetHostKind() != daemonv1.HostKind_HOST_KIND_PHYSICAL {
+		t.Errorf("Info = %v", info)
+	}
+	// Only the built class (small), with what its manifest says: the
+	// cold boot comes from the store, never from a constant.
+	if len(info.GetClasses()) != 1 {
+		t.Fatalf("classes %v, want only small", info.GetClasses())
+	}
+	c := info.GetClasses()[0]
+	if c.GetName() != "small" || c.GetVcpus() != 1 || c.GetMemoryMib() != 256 || c.GetColdBootUs() != 81234 ||
+		c.GetKernelVersion() != "6.1.155" || c.GetAgentVersion() != "sandbox-agent test" || !c.GetVmgenid() ||
+		c.GetSnapshotVersion() != "20261124T090000Z-aaaaaa" || c.GetSnapshotCreatedAt().AsTime().Day() != 24 {
+		t.Errorf("class %v", c)
+	}
+	// A server that never looked at its host says so.
+	srv := NewServer(Config{Store: h.srv.cfg.Store, MaxConcurrent: 1})
+	if info, err := srv.Info(t.Context(), &daemonv1.InfoRequest{}); err != nil ||
+		info.GetHostKind() != daemonv1.HostKind_HOST_KIND_UNKNOWN {
+		t.Errorf("Info without a host kind = %v, %v; want unknown", info, err)
+	}
+}
+
+func TestHostStatsAndJailedUID(t *testing.T) {
+	h := newHarnessIn(t, clone.Jailer, 2, 2)
+	root := h.srv.cfg.Store.Root()
+	ctx := t.Context()
+
+	// Nothing running: no clones, nothing in the state folder.
+	stats, err := h.client.HostStats(ctx, &daemonv1.HostStatsRequest{})
+	if err != nil {
+		t.Fatalf("HostStats: %v", err)
+	}
+	if len(stats.GetClones()) != 0 || stats.GetRunDirs().GetN() != 0 || stats.GetRunDirs().GetError() != "" ||
+		stats.GetJailDirs().GetN() != 0 || stats.GetFirecrackerProcesses().GetError() != "" || stats.GetAt() == nil {
+		t.Errorf("idle HostStats = %v", stats)
+	}
+
+	// Two runs hold a clone each; a run folder and a jail folder exist.
+	for _, d := range []string{filepath.Join(root.RunsDir(), "r-00000000000000aa"), filepath.Join(root.JailDir(), "firecracker", "r-00000000000000bb")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() { _, _ = runToEnd(t, h.client, &daemonv1.RunRequest{Argv: []string{"hold"}}) })
+	}
+	waitFor(t, "two clones", func() bool {
+		s, err := h.client.HostStats(ctx, &daemonv1.HostStatsRequest{})
+		return err == nil && len(s.GetClones()) == 2
+	})
+	stats, err = h.client.HostStats(ctx, &daemonv1.HostStatsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uids := map[uint32]bool{}
+	for _, c := range stats.GetClones() {
+		uids[c.GetJailedUid()] = true
+		// The fake clone's "Firecracker" is this test process.
+		if !state.ValidID(c.GetRunId()) || int(c.GetPid()) != os.Getpid() || c.GetMemoryError() != "" ||
+			c.GetRssBytes() == 0 || c.GetPssBytes() == 0 || c.GetPssBytes() > c.GetRssBytes() {
+			t.Errorf("clone %v", c)
+		}
+		// Get and List say the same jailed UID.
+		got, err := h.client.Get(ctx, &daemonv1.GetRequest{RunId: c.GetRunId()})
+		if err != nil || got.GetRun().GetJailedUid() != c.GetJailedUid() {
+			t.Errorf("Get(%s) = %v, %v; want jailed UID %d", c.GetRunId(), got, err, c.GetJailedUid())
+		}
+	}
+	if !uids[70000] || !uids[70001] {
+		t.Errorf("jailed UIDs %v, want 70000 and 70001 (one per slot)", uids)
+	}
+	if stats.GetRunDirs().GetN() != 1 || stats.GetJailDirs().GetN() != 1 {
+		t.Errorf("run folders %v, jails %v; want 1 each", stats.GetRunDirs(), stats.GetJailDirs())
+	}
+	close(h.cloner.gate)
+	wg.Wait()
+	stats, err = h.client.HostStats(ctx, &daemonv1.HostStatsRequest{})
+	if err != nil || len(stats.GetClones()) != 0 {
+		t.Errorf("after the runs: %v, %v; want no clones", stats, err)
+	}
+}
+
+func TestHostStatsRootlessHasNoJailedUID(t *testing.T) {
+	h := newHarness(t, 1, 1)
+	got, err := runToEnd(t, h.client, &daemonv1.RunRequest{Argv: []string{"echo", "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := h.client.Get(t.Context(), &daemonv1.GetRequest{RunId: got.result.GetRunId()})
+	if err != nil || info.GetRun().GetJailedUid() != 0 {
+		t.Errorf("rootless run: %v, %v; want no jailed UID", info, err)
+	}
+}
+
+func TestProcessesUnder(t *testing.T) {
+	// A fake /proc: process 1 runs in a run folder, 2 in a jail, 3
+	// elsewhere, 4 next to (not inside) the runs folder; "self" is not a
+	// process.
+	proc := t.TempDir()
+	for pid, cwd := range map[string]string{"1": "/s/runs/r-1", "2": "/s/jail/firecracker/r-2/root", "3": "/home", "4": "/s/runs-old/x", "self": "/s/runs/x"} {
+		if err := os.MkdirAll(filepath.Join(proc, pid), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(cwd, filepath.Join(proc, pid, "cwd")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &hostStats{procDir: proc}
+	if got := h.processesUnder(t.Context(), "/s/runs", "/s/jail"); got.GetN() != 2 || got.GetError() != "" {
+		t.Errorf("processesUnder = %v, want 2", got)
+	}
+	h = &hostStats{procDir: filepath.Join(proc, "missing")}
+	if got := h.processesUnder(t.Context(), "/s/runs"); got.GetError() == "" || strings.Contains(got.GetError(), proc) {
+		t.Errorf("processesUnder without /proc = %v, want a reason without the path", got)
+	}
+	if _, _, err := h.memory(1); err == nil || strings.Contains(err.Error(), proc) {
+		t.Errorf("memory of a missing process: %v, want a reason without the path", err)
+	}
+}
+
+func TestParseSmapsRollup(t *testing.T) {
+	data := []byte("55d0c0a00000-7ffd5a9f2000 ---p 00000000 00:00 0    [rollup]\n" +
+		"Rss:              263304 kB\nPss:               91234 kB\nPss_Anon:          10000 kB\nShared_Clean:     200000 kB\n")
+	rss, pss, err := parseSmapsRollup(data)
+	if err != nil || rss != 263304<<10 || pss != 91234<<10 {
+		t.Errorf("parseSmapsRollup = %d, %d, %v", rss, pss, err)
+	}
+	if _, _, err := parseSmapsRollup([]byte("Rss: 12 kB\n")); err == nil {
+		t.Error("no Pss line, but no error")
+	}
+}
+
+func TestClassifyHost(t *testing.T) {
+	x86 := []byte("processor\t: 0\nflags\t\t: fpu vme sse2 avx2\n")
+	x86vm := []byte("processor\t: 0\nflags\t\t: fpu vme hypervisor sse2\n")
+	arm := []byte("processor\t: 0\nFeatures\t: fp asimd evtstrm\n")
+	board := map[string]string{"sys_vendor": "Micro-Star International Co., Ltd.", "product_name": "MS-7C96"}
+	for _, tc := range []struct {
+		name    string
+		cpuinfo []byte
+		dmi     map[string]string
+		goarch  string
+		want    daemonv1.HostKind
+	}{
+		{"desktop", x86, board, "amd64", daemonv1.HostKind_HOST_KIND_PHYSICAL},
+		{"x86 VM by its flag", x86vm, board, "amd64", daemonv1.HostKind_HOST_KIND_VIRTUAL},
+		{"x86 VM by its firmware", x86, map[string]string{"sys_vendor": "QEMU", "product_name": "Standard PC (Q35 + ICH9, 2009)"}, "amd64", daemonv1.HostKind_HOST_KIND_VIRTUAL},
+		{"Lima on a Mac", arm, map[string]string{"sys_vendor": "Apple Inc.", "product_name": "Apple Virtualization Generic Platform"}, "arm64", daemonv1.HostKind_HOST_KIND_VIRTUAL},
+		{"arm64 board", arm, map[string]string{"sys_vendor": "Ampere(R)"}, "arm64", daemonv1.HostKind_HOST_KIND_UNKNOWN},
+		{"nothing readable", nil, nil, "arm64", daemonv1.HostKind_HOST_KIND_UNKNOWN},
+		{"x86 without firmware names", x86, nil, "amd64", daemonv1.HostKind_HOST_KIND_PHYSICAL},
+	} {
+		got := classifyHost(tc.cpuinfo, tc.dmi, tc.goarch)
+		if got.Kind != tc.want || got.Detail == "" {
+			t.Errorf("%s: %v (%q), want %v", tc.name, got.Kind, got.Detail, tc.want)
+		}
+	}
+	// The firmware's own names are never in the detail of a physical host.
+	if got := classifyHost(x86, board, "amd64"); strings.Contains(got.Detail, "Micro-Star") {
+		t.Errorf("detail %q names the board", got.Detail)
+	}
+	// DetectHost runs on this machine without failing.
+	if got := DetectHost(); got.Kind == daemonv1.HostKind_HOST_KIND_UNSPECIFIED || got.Detail == "" {
+		t.Errorf("DetectHost() = %+v", got)
 	}
 }

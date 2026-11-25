@@ -37,8 +37,10 @@ type runEntry struct {
 	cancel    func(error) // stops the run, with a reason
 
 	// Guarded by the registry's mu.
-	out    output
-	result *daemonv1.RunResult // set once the run has ended
+	out       output
+	result    *daemonv1.RunResult // set once the run has ended
+	vm        VM                  // the restored clone, until it is destroyed
+	jailedUID uint32              // jailer mode, once the run has a slot
 }
 
 // output is what the daemon kept of a run's output.
@@ -137,6 +139,41 @@ func (r *registry) finish(e *runEntry, res *daemonv1.RunResult) {
 	}
 }
 
+// setVM records e's restored clone, or (nil) that it is being
+// destroyed.
+func (r *registry) setVM(e *runEntry, vm VM) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e.vm = vm
+}
+
+// setJailedUID records the UID e's clone runs as (jailer mode).
+func (r *registry) setJailedUID(e *runEntry, uid uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e.jailedUID = uid
+}
+
+// liveClone is one restored clone, for HostStats.
+type liveClone struct {
+	id        string
+	pid       int
+	jailedUID uint32
+}
+
+// live returns the runs that have a restored clone now, oldest first.
+func (r *registry) live() []liveClone {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []liveClone
+	for _, e := range r.order {
+		if e.vm != nil {
+			out = append(out, liveClone{id: e.id, pid: e.vm.Pid(), jailedUID: e.jailedUID})
+		}
+	}
+	return out
+}
+
 // get returns the run called id.
 func (r *registry) get(id string) (*runEntry, bool) {
 	r.mu.Lock()
@@ -162,7 +199,7 @@ func (r *registry) list(all bool) []*runEntry {
 // info describes e for List and Get.
 func (r *registry) info(e *runEntry) *daemonv1.RunInfo {
 	r.mu.Lock()
-	res := e.result
+	res, jailedUID := e.result, e.jailedUID
 	r.mu.Unlock()
 	trs := e.machine.Transitions()
 	info := &daemonv1.RunInfo{
@@ -174,9 +211,10 @@ func (r *registry) info(e *runEntry) *daemonv1.RunInfo {
 		CallerUid: e.callerUID,
 		CreatedAt: timestamp(e.machine.Created()),
 		Result:    res,
+		JailedUid: jailedUID,
 	}
 	for _, t := range trs {
-		info.Transitions = append(info.Transitions, transitionToProto(t))
+		info.Transitions = append(info.Transitions, transitionToProto(e.id, t))
 	}
 	return info
 }
@@ -286,8 +324,8 @@ var outcomeProto = map[run.Outcome]daemonv1.Outcome{
 
 func outcomeToProto(o run.Outcome) daemonv1.Outcome { return outcomeProto[o] }
 
-func transitionToProto(t run.Transition) *daemonv1.StateChange {
-	return &daemonv1.StateChange{State: stateToProto(t.State), At: timestamp(t.At), Detail: t.Detail}
+func transitionToProto(id string, t run.Transition) *daemonv1.StateChange {
+	return &daemonv1.StateChange{State: stateToProto(t.State), At: timestamp(t.At), Detail: t.Detail, RunId: id}
 }
 
 // micros turns a duration into whole microseconds (never negative).

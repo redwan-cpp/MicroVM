@@ -230,6 +230,9 @@ func Start(opts Options) (_ *Daemon, err error) {
 		MaxPending:    MaxPending,
 		Version:       opts.Version,
 		Logger:        logger,
+
+		FirecrackerVersion: fcVersion,
+		Host:               DetectHost(),
 	})
 	d.grpc = grpc.NewServer(
 		grpc.Creds(peerCreds{}),
