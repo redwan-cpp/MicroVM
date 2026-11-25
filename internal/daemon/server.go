@@ -174,7 +174,13 @@ func (s *Server) Run(req *daemonv1.RunRequest, stream daemonv1.SandboxService_Ru
 	if err != nil {
 		return err
 	}
-	caller, _ := callerOf(ctx)
+	caller, ok := callerOf(ctx)
+	if !ok {
+		// Every connection through peerCreds has them; a call without
+		// them came some other way, and its caller would be recorded as
+		// UID 0 (root). Refuse it.
+		return status.Error(codes.Unauthenticated, "the call has no peer credentials (SO_PEERCRED): sandboxd only serves its Unix socket")
+	}
 	e, err := s.admit(req, plan, caller.UID)
 	if err != nil {
 		return err

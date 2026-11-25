@@ -327,6 +327,14 @@ func listen(path string, jailerMode bool, group string, ownDir bool) (net.Listen
 	dir := filepath.Dir(path)
 	if err := os.Mkdir(dir, dirMode); err == nil || (ownDir && errors.Is(err, fs.ErrExist)) {
 		// Our own folder (new, or the default one): set its mode and group.
+		// Never through a symlink someone put in its place.
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return nil, fmt.Errorf("daemon: %w", err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("daemon: the socket's folder %s is not a folder (a symlink?)", dir)
+		}
 		if err := os.Chmod(dir, dirMode); err != nil {
 			return nil, fmt.Errorf("daemon: %w", err)
 		}
@@ -342,10 +350,13 @@ func listen(path string, jailerMode bool, group string, ownDir bool) (net.Listen
 	if err := clearStaleSocket(path); err != nil {
 		return nil, err
 	}
-	// The socket is created with the permissions the umask leaves; make
-	// the umask strict while it is, so it is never more open than wanted,
-	// not even for a moment. (At start-up nothing else creates files.)
-	old := unix.Umask(0o177)
+	// The socket gets the permissions the umask leaves of 0777, so the
+	// umask sets its mode (0600, or 0660 with a group) as it is created:
+	// it is never more open than wanted, not even for a moment, and no
+	// chmod is needed afterwards (chmod would follow a symlink put in its
+	// place). At start-up nothing else creates files, so changing the
+	// process-wide umask for this one call is safe.
+	old := unix.Umask(int(0o777 &^ sockMode))
 	lis, err := net.Listen("unix", path)
 	unix.Umask(old)
 	if err != nil {
@@ -358,12 +369,9 @@ func listen(path string, jailerMode bool, group string, ownDir bool) (net.Listen
 		}
 	}()
 	if gid >= 0 {
-		if err := os.Lchown(path, 0, gid); err != nil {
+		if err := os.Lchown(path, 0, gid); err != nil { // Lchown: never through a symlink
 			return nil, fmt.Errorf("daemon: %w", err)
 		}
-	}
-	if err := os.Chmod(path, sockMode); err != nil {
-		return nil, fmt.Errorf("daemon: %w", err)
 	}
 	ok = true
 	return lis, nil

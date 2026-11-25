@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -995,6 +996,65 @@ func TestStartChecks(t *testing.T) {
 	if got, _ := DefaultSocket(true); got != "/run/sandboxd/sandboxd.sock" {
 		t.Errorf("DefaultSocket(jailer) = %s", got)
 	}
+}
+
+// streamWithout is a Run stream whose context has no peer credentials.
+type streamWithout struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s streamWithout) Context() context.Context         { return s.ctx }
+func (s streamWithout) Send(*daemonv1.RunResponse) error { return nil }
+
+func TestRunRefusesACallWithoutPeerCredentials(t *testing.T) {
+	h := newHarness(t, 1, 1)
+	err := h.srv.Run(&daemonv1.RunRequest{Argv: []string{"echo"}}, streamWithout{ctx: t.Context()})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Errorf("Run without peer credentials = %v, want Unauthenticated", err)
+	}
+	if _, _, restores, _ := h.cloner.stats(); restores != 0 {
+		t.Errorf("%d restores, want none", restores)
+	}
+	if list, _ := h.srv.List(t.Context(), &daemonv1.ListRequest{All: true}); len(list.GetRuns()) != 0 {
+		t.Errorf("the refused call was registered: %v", list.GetRuns())
+	}
+}
+
+func TestSocketModeComesFromTheUmask(t *testing.T) {
+	store := newFakeStore(t)
+	// A folder of ours that exists already: listen leaves its mode alone,
+	// so only the socket's own mode protects it here.
+	sock := filepath.Join(store.Root().Dir(), "s.sock")
+	before := currentUmask()
+	lis, err := listen(sock, false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lis.Close() //nolint:errcheck // a test listener
+	if info, err := os.Lstat(sock); err != nil || info.Mode() != os.ModeSocket|0o600 {
+		t.Errorf("socket: %v, %v; want a 0600 socket", info.Mode(), err)
+	}
+	if after := currentUmask(); after != before {
+		t.Errorf("the umask is %04o after listen, was %04o: not restored", after, before)
+	}
+
+	// The default folder replaced by a symlink is refused.
+	target := t.TempDir()
+	link := filepath.Join(store.Root().Dir(), "linkdir")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listen(filepath.Join(link, "s.sock"), false, "", true); err == nil || !strings.Contains(err.Error(), "not a folder") {
+		t.Errorf("listen in a symlinked folder: %v", err)
+	}
+}
+
+// currentUmask reads the process's umask (setting it back at once).
+func currentUmask() int {
+	old := unix.Umask(0o022)
+	unix.Umask(old)
+	return old
 }
 
 func TestPeerCredsRefuseOtherConnections(t *testing.T) {
