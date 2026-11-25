@@ -13,9 +13,11 @@ import (
 )
 
 // ManifestFormat is the version of the manifest.json layout. Format 2
-// (week 4) added the scratch disk template; a store of format 1 has none,
-// so opening it says "run make snapshots".
-const ManifestFormat = 2
+// (week 4) added the scratch disk template; format 3 (week 4b) added the
+// architecture, the guest kernel's version and the cold boot time. A
+// store of an older format lacks them, so opening it says "run make
+// snapshots".
+const ManifestFormat = 3
 
 // maxManifestSize is the largest manifest.json we read.
 const maxManifestSize = 64 << 10
@@ -26,6 +28,10 @@ const maxManifestSize = 64 << 10
 type Manifest struct {
 	// Format is ManifestFormat.
 	Format int `json:"format"`
+	// Arch is the CPU architecture the snapshot was made on, "x86_64" or
+	// "aarch64" (HostArch). It holds that machine's vCPU registers, so it
+	// only restores on the same architecture.
+	Arch string `json:"arch"`
 	// Class is the size class's name, and VCPUs, MemoryMiB and ScratchMiB
 	// its shape when the snapshot was made.
 	Class      string `json:"class"`
@@ -39,6 +45,9 @@ type Manifest struct {
 	// KernelSHA256 is the guest kernel that booted the VM. It is not
 	// needed to restore (the kernel is in guest memory), only recorded.
 	KernelSHA256 string `json:"kernel_sha256"`
+	// KernelVersion is what `uname -r` said in the build VM, for example
+	// "6.1.155": the kernel every clone of this snapshot runs.
+	KernelVersion string `json:"kernel_version"`
 	// RootfsSHA256 is the root disk, the store's own rootfs.ext4.
 	RootfsSHA256 string `json:"rootfs_sha256"`
 	// AgentVersion is what sandbox-agent in the VM reported.
@@ -55,6 +64,13 @@ type Manifest struct {
 	// reseeds its random number generator by itself on every restore,
 	// on top of the agent's Reseed (docs/learn/09-snapshots-and-cow.md).
 	VMGenID bool `json:"vmgenid"`
+
+	// ColdBootUS is the build VM's cold boot in microseconds, from
+	// InstanceStart to the agent's first answer. It is the reference a
+	// restore is compared with (sandboxd's Info call, sandboxctl ui),
+	// measured on this machine when the snapshot was made, never a number
+	// typed in by hand.
+	ColdBootUS uint64 `json:"cold_boot_us"`
 
 	// CreatedAt is when the snapshot was made (UTC).
 	CreatedAt time.Time `json:"created_at"`

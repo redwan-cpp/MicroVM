@@ -52,6 +52,16 @@ func TestRestoreFromSnapshot(t *testing.T) {
 	m := built.Version.Manifest
 	t.Logf("built %s/%s in %v; cold boot: InstanceStart → agent ready %v",
 		m.Class, built.Version.ID, built.Total.Round(time.Millisecond), built.Boot.Round(time.Millisecond))
+	// Format 3: the architecture, the kernel the guest really ran, and the
+	// cold boot that restores are compared with.
+	arch, err := snapshot.HostArch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Arch != arch || !strings.HasPrefix(m.KernelVersion, "6.1.") || m.ColdBootUS != uint64(built.Boot.Microseconds()) { //nolint:gosec // G115: a boot time
+		t.Errorf("manifest arch %q, kernel %q, cold boot %d µs; want %s, 6.1.x, %d µs",
+			m.Arch, m.KernelVersion, m.ColdBootUS, arch, built.Boot.Microseconds())
+	}
 
 	// Open the store as sandboxd will: once, with the version of the
 	// Firecracker that will load it.

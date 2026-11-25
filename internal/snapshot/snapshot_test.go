@@ -94,8 +94,8 @@ func TestNewVersionIDSortsByTime(t *testing.T) {
 
 func TestManifestRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	want := &Manifest{Format: ManifestFormat, Class: "small", VCPUs: 1, FirecrackerVersion: "v1.17.0",
-		CreatedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC), VMGenID: true}
+	want := &Manifest{Format: ManifestFormat, Arch: ArchX86_64, Class: "small", VCPUs: 1, FirecrackerVersion: "v1.17.0",
+		KernelVersion: "6.1.155", ColdBootUS: 81234, CreatedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC), VMGenID: true}
 	if err := writeManifest(dir, want); err != nil {
 		t.Fatalf("writeManifest: %v", err)
 	}
@@ -115,7 +115,8 @@ func TestReadManifestIsStrict(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown field": `{"format": 1, "class": "small", "surprise": true}`,
 		"older format":  `{"format": 1, "class": "small"}`,
-		"newer format":  `{"format": 3, "class": "small"}`,
+		"format 2":      `{"format": 2, "class": "small", "scratch_sha256": "00"}`,
+		"newer format":  `{"format": 4, "class": "small"}`,
 		"not json":      `hello`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -139,7 +140,11 @@ func fakeVersion(t *testing.T, root *state.Root, class Class, id string) *Versio
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manifest{Format: ManifestFormat, Class: class.Name, VCPUs: class.VCPUs, MemoryMiB: class.MemoryMiB,
+	arch, err := HostArch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{Format: ManifestFormat, Arch: arch, Class: class.Name, VCPUs: class.VCPUs, MemoryMiB: class.MemoryMiB,
 		ScratchMiB: class.ScratchMiB, FirecrackerVersion: "v1.17.0"}
 	for name, sum := range map[string]*string{StateName: &m.StateSHA256, MemName: &m.MemSHA256, RootfsName: &m.RootfsSHA256,
 		ScratchName: &m.ScratchSHA256} {
@@ -368,7 +373,7 @@ func TestManifestJSONNames(t *testing.T) {
 	}
 	for _, key := range []string{"format", "class", "vcpus", "memory_mib", "scratch_mib", "firecracker_version",
 		"kernel_sha256", "rootfs_sha256", "agent_version", "vm_snap_sha256", "mem_snap_sha256", "scratch_sha256",
-		"vmgenid", "created_at"} {
+		"vmgenid", "created_at", "arch", "kernel_version", "cold_boot_us"} {
 		if !strings.Contains(string(data), `"`+key+`"`) {
 			t.Errorf("manifest JSON has no %q: %s", key, data)
 		}
@@ -388,6 +393,82 @@ func TestOpenRefusesAWeek3Store(t *testing.T) {
 	}
 	if _, err := Open(t.Context(), root, "v1.17.0"); err == nil || !strings.Contains(err.Error(), "run make snapshots") {
 		t.Errorf("Open of a format-1 store = %v, want run make snapshots", err)
+	}
+}
+
+func TestOpenRefusesAWeek4Store(t *testing.T) {
+	root := openState(t)
+	v := fakeVersion(t, root, Classes[0], testID)
+	// A week-4 manifest: format 2, without the architecture and the cold
+	// boot time.
+	if err := os.Remove(v.Path(ManifestName)); err != nil {
+		t.Fatal(err)
+	}
+	v.Manifest.Format, v.Manifest.Arch, v.Manifest.ColdBootUS = 2, "", 0
+	if err := writeManifest(v.Dir, v.Manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(t.Context(), root, "v1.17.0"); err == nil || !strings.Contains(err.Error(), "format 2") ||
+		!strings.Contains(err.Error(), "run make snapshots") {
+		t.Errorf("Open of a format-2 store = %v, want run make snapshots", err)
+	}
+}
+
+func TestOpenRefusesAnotherArch(t *testing.T) {
+	root := openState(t)
+	v := fakeVersion(t, root, Classes[0], testID)
+	other := map[string]string{ArchX86_64: ArchAarch64, ArchAarch64: ArchX86_64}[v.Manifest.Arch]
+	if err := os.Remove(v.Path(ManifestName)); err != nil {
+		t.Fatal(err)
+	}
+	v.Manifest.Arch = other
+	if err := writeManifest(v.Dir, v.Manifest); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(t.Context(), root, "v1.17.0")
+	if err == nil || !strings.Contains(err.Error(), "made on "+other) || !strings.Contains(err.Error(), "run make snapshots") {
+		t.Errorf("Open of a store made on %s = %v, want a clear refusal", other, err)
+	}
+}
+
+func TestArchOf(t *testing.T) {
+	for goarch, want := range map[string]string{"amd64": "x86_64", "arm64": "aarch64"} {
+		if got, err := archOf(goarch); err != nil || got != want {
+			t.Errorf("archOf(%s) = %q, %v; want %q", goarch, got, err, want)
+		}
+	}
+	for _, goarch := range []string{"386", "riscv64", "ppc64le", ""} {
+		if got, err := archOf(goarch); err == nil || !strings.Contains(err.Error(), "unsupported architecture") {
+			t.Errorf("archOf(%q) = %q, %v; want a clear error", goarch, got, err)
+		}
+	}
+	if _, err := HostArch(); err != nil {
+		t.Errorf("HostArch on the machine the tests run on: %v", err)
+	}
+}
+
+func TestStoreClasses(t *testing.T) {
+	root := openState(t)
+	fakeVersion(t, root, Classes[1], testID) // medium only
+	s, err := Open(t.Context(), root, "v1.17.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Classes(); len(got) != 1 || got[0].Manifest.Class != "medium" {
+		t.Errorf("Classes() = %v, want only medium", got)
+	}
+}
+
+func TestKernelRelease(t *testing.T) {
+	for _, ok := range []string{"6.1.155", "6.1.155-fc+", "5.10.0_rc1"} {
+		if !kernelRelease.MatchString(ok) {
+			t.Errorf("%q is not taken as a kernel release", ok)
+		}
+	}
+	for _, bad := range []string{"", "6.1 155", "\x1b[31m6.1", "-6.1", strings.Repeat("6", 65), "6.1\n"} {
+		if kernelRelease.MatchString(bad) {
+			t.Errorf("%q is taken as a kernel release", bad)
+		}
 	}
 }
 

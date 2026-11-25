@@ -180,9 +180,9 @@ func build(ctx context.Context, stateDir string, classes []snapshot.Class, keep 
 			return err
 		}
 		m := res.Version.Manifest
-		fmt.Printf("%-6s built %s in %v: %d vCPU, %d MiB; cold boot to agent %v; VMGenID %v\n",
-			class.Name, res.Version.ID, res.Total.Round(10*time.Millisecond), m.VCPUs, m.MemoryMiB,
-			res.Boot.Round(time.Millisecond), yesNo(m.VMGenID))
+		fmt.Printf("%-6s built %s in %v: %d vCPU, %d MiB, %s, kernel %s; cold boot to agent %v; VMGenID %v\n",
+			class.Name, res.Version.ID, res.Total.Round(10*time.Millisecond), m.VCPUs, m.MemoryMiB, m.Arch,
+			m.KernelVersion, res.Boot.Round(time.Millisecond), yesNo(m.VMGenID))
 	}
 	if err := prune(root, classes, keep); err != nil {
 		return err

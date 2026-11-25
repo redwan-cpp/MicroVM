@@ -60,9 +60,10 @@ type Store struct {
 // here (Current reports it); a broken one fails Open:
 //
 //   - the manifest must match the class as defined today (vCPUs, memory,
-//     scratch size), and name firecrackerVersion (vmm.BinaryVersion of the
-//     Firecracker that will load it): a snapshot only loads in the
-//     Firecracker version that made it;
+//     scratch size), name firecrackerVersion (vmm.BinaryVersion of the
+//     Firecracker that will load it), since a snapshot only loads in the
+//     Firecracker version that made it, and name this machine's
+//     architecture (HostArch);
 //   - vm.snap, mem.snap, rootfs.ext4 and the scratch template
 //     scratch.ext4 must have the SHA-256 the manifest recorded, and mode
 //     0444.
@@ -72,9 +73,13 @@ type Store struct {
 // include it. Open pins each class to the version that was current at that
 // moment: a later build does not change what this Store restores.
 func Open(ctx context.Context, root *state.Root, firecrackerVersion string) (*Store, error) {
+	arch, err := HostArch()
+	if err != nil {
+		return nil, err
+	}
 	s := &Store{root: root, versions: make(map[string]*Version)}
 	for _, class := range Classes {
-		v, err := openCurrent(ctx, root, class, firecrackerVersion)
+		v, err := openCurrent(ctx, root, class, firecrackerVersion, arch)
 		if errors.Is(err, errNotBuilt) {
 			continue
 		}
@@ -91,7 +96,7 @@ var errNotBuilt = errors.New("snapshot: not built yet")
 
 // openCurrent loads and checks the current version of class, or returns
 // errNotBuilt.
-func openCurrent(ctx context.Context, root *state.Root, class Class, firecrackerVersion string) (*Version, error) {
+func openCurrent(ctx context.Context, root *state.Root, class Class, firecrackerVersion, arch string) (*Version, error) {
 	classDir := filepath.Join(root.SnapshotsDir(), class.Name)
 	id, err := os.Readlink(filepath.Join(classDir, currentName))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -107,7 +112,7 @@ func openCurrent(ctx context.Context, root *state.Root, class Class, firecracker
 	if v.Manifest, err = readManifest(v.Dir); err != nil {
 		return nil, err
 	}
-	if err := check(ctx, v, class, firecrackerVersion); err != nil {
+	if err := check(ctx, v, class, firecrackerVersion, arch); err != nil {
 		return nil, fmt.Errorf("snapshot: %s version %s: %w", class.Name, id, err)
 	}
 	return v, nil
@@ -116,9 +121,14 @@ func openCurrent(ctx context.Context, root *state.Root, class Class, firecracker
 // errRebuild ends every "this snapshot cannot be used" message.
 const errRebuild = "run make snapshots"
 
-// check verifies one version against its manifest and the class.
-func check(ctx context.Context, v *Version, class Class, firecrackerVersion string) error {
+// check verifies one version against its manifest, the class and this
+// machine.
+func check(ctx context.Context, v *Version, class Class, firecrackerVersion, arch string) error {
 	m := v.Manifest
+	if m.Arch != arch {
+		return fmt.Errorf("made on %s, but this machine is %s: a snapshot only restores on the architecture that made it: %s",
+			orUnknown(m.Arch), arch, errRebuild)
+	}
 	if m.Class != class.Name || m.VCPUs != class.VCPUs || m.MemoryMiB != class.MemoryMiB || m.ScratchMiB != class.ScratchMiB {
 		return fmt.Errorf("made for %s with %d vCPU, %d MiB, %d MiB scratch, but the class is now %d vCPU, %d MiB, %d MiB scratch: %s",
 			m.Class, m.VCPUs, m.MemoryMiB, m.ScratchMiB, class.VCPUs, class.MemoryMiB, class.ScratchMiB, errRebuild)
@@ -150,6 +160,26 @@ func check(ctx context.Context, v *Version, class Class, firecrackerVersion stri
 		}
 	}
 	return nil
+}
+
+// orUnknown names an architecture for a message.
+func orUnknown(arch string) string {
+	if arch == "" {
+		return "an unknown architecture"
+	}
+	return arch
+}
+
+// Classes returns the current version of every class that has one,
+// smallest class first.
+func (s *Store) Classes() []*Version {
+	var out []*Version
+	for _, c := range Classes {
+		if v, ok := s.versions[c.Name]; ok {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // Root is the state folder the store lives in.

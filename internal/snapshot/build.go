@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -81,6 +82,10 @@ type BuildResult struct {
 //     "current" at the new version.
 func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) (_ *BuildResult, err error) {
 	began := time.Now()
+	arch, err := HostArch()
+	if err != nil {
+		return nil, err
+	}
 	fcVersion, err := vmm.BinaryVersion(ctx, cfg.Firecracker)
 	if err != nil {
 		return nil, err
@@ -126,13 +131,16 @@ func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) 
 
 	m := &Manifest{
 		Format:             ManifestFormat,
+		Arch:               arch,
 		Class:              class.Name,
 		VCPUs:              class.VCPUs,
 		MemoryMiB:          class.MemoryMiB,
 		ScratchMiB:         class.ScratchMiB,
 		FirecrackerVersion: fcVersion,
+		KernelVersion:      vm.kernelVersion,
 		AgentVersion:       vm.agentVersion,
 		VMGenID:            vm.vmgenid,
+		ColdBootUS:         uint64(max(vm.boot.Microseconds(), 0)), //nolint:gosec // G115: never negative
 		CreatedAt:          began.UTC().Truncate(time.Second),
 	}
 	for _, h := range []struct {
@@ -177,9 +185,10 @@ func Build(ctx context.Context, root *state.Root, class Class, cfg BuildConfig) 
 
 // builtVM is what bootAndSnapshot learned from the build VM.
 type builtVM struct {
-	boot         time.Duration
-	agentVersion string
-	vmgenid      bool
+	boot          time.Duration
+	agentVersion  string
+	kernelVersion string
+	vmgenid       bool
 }
 
 // bootAndSnapshot runs the build VM in a fresh run folder and moves its
@@ -244,6 +253,9 @@ func bootAndSnapshot(ctx context.Context, root *state.Root, class Class, cfg Bui
 	}
 	vm := builtVM{boot: time.Since(started), agentVersion: health.GetVersion()}
 	vm.vmgenid, err = probeVMGenID(ctx, agent)
+	if err == nil {
+		vm.kernelVersion, err = probeKernel(ctx, agent)
+	}
 	// The host's connection must not be part of the snapshot: a clone
 	// would wake up with a connection to a host side that is long gone.
 	_ = agent.Close()
@@ -286,6 +298,27 @@ func probeVMGenID(ctx context.Context, agent *agentclient.Client) (bool, error) 
 		return false, fmt.Errorf("probe VMGenID: %+v", res)
 	}
 	return vmgenidBound(out.String()), nil
+}
+
+// kernelRelease is the shape of a kernel release such as "6.1.155".
+var kernelRelease = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
+
+// probeKernel returns the guest kernel's release (`uname -r` in the build
+// VM), for the manifest. It must look like a release: the snapshot's
+// manifest is shown to users, so nothing else from the guest goes in.
+func probeKernel(ctx context.Context, agent *agentclient.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	var out strings.Builder
+	res, err := agent.Exec(ctx, &agentv1.ExecRequest{Argv: []string{"uname", "-r"}, MaxOutputBytes: 256}, &out, nil)
+	if err != nil {
+		return "", fmt.Errorf("probe the kernel version: %w", err)
+	}
+	release := strings.TrimSpace(out.String())
+	if !res.Exited || res.ExitCode != 0 || !kernelRelease.MatchString(release) {
+		return "", fmt.Errorf("probe the kernel version: %+v, output %q", res, release)
+	}
+	return release, nil
 }
 
 // vmgenidBound reads the `ls` output of the vmgenid driver folders: the

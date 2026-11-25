@@ -195,7 +195,11 @@ func newStore(t *testing.T) *snapshot.Store {
 	if err := os.MkdirAll(version, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m := snapshot.Manifest{Format: snapshot.ManifestFormat, Class: class.Name, VCPUs: class.VCPUs,
+	arch, err := snapshot.HostArch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := snapshot.Manifest{Format: snapshot.ManifestFormat, Arch: arch, Class: class.Name, VCPUs: class.VCPUs,
 		MemoryMiB: class.MemoryMiB, ScratchMiB: class.ScratchMiB, FirecrackerVersion: "v1.17.0"}
 	for name, sum := range map[string]*string{
 		snapshot.StateName: &m.StateSHA256, snapshot.MemName: &m.MemSHA256, snapshot.RootfsName: &m.RootfsSHA256,
