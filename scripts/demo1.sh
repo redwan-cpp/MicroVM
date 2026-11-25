@@ -9,7 +9,8 @@
 #   scripts/demo1.sh --no-pause    run straight through (rehearsal; exits non-zero if a check fails)
 #   scripts/demo1.sh --jailer      jailer mode: chroot, own UID and cgroup per clone. Only the
 #                                  daemon (bin/sandboxd serve --jailer) runs as root, under sudo;
-#                                  everything is built as you
+#                                  everything is built as you. sudo is also used to stop it
+#                                  (kill -TERM) and to look into the root-only jail/firecracker/
 #
 # Needs: make firecracker, make guest (they download; run them before the demo).
 set -euo pipefail
@@ -109,22 +110,57 @@ if ((JAILER)); then
 fi
 
 LOG="$(mktemp "${TMPDIR:-/tmp}/sandboxd-demo1.XXXXXX.log")"
+# DAEMON_PID is the background job that runs the daemon: sandboxd itself in
+# rootless mode, sudo in jailer mode. sudo runs as root, so we may not
+# signal it (kill -0 says EPERM) but can see it in /proc; it stays until
+# sandboxd exits, and passes the signals it gets on to sandboxd.
 DAEMON_PID=""
+daemon_alive() {
+  [[ -n "${DAEMON_PID}" ]] || return 1
+  if ((JAILER)); then
+    [[ -e "/proc/${DAEMON_PID}" ]]
+  else
+    kill -0 "${DAEMON_PID}" 2> /dev/null
+  fi
+}
+# daemon_answers: the daemon accepts connections and answers. A socket
+# file alone proves nothing: a crashed daemon leaves a stale one.
+daemon_answers() {
+  bin/sandboxctl --socket "${SOCKET}" ps > /dev/null 2>&1
+}
 stop_daemon() {
   [[ -n "${DAEMON_PID}" ]] || return 0
-  if kill -0 "${DAEMON_PID}" 2> /dev/null; then
-    # The daemon stops on SIGTERM: it destroys every clone first. In jailer
-    # mode it is root's process, so the signal goes through sudo.
-    kill -TERM "${DAEMON_PID}" 2> /dev/null || sudo -n kill -TERM "${DAEMON_PID}" 2> /dev/null || true
+  if daemon_alive; then
+    # The daemon stops on SIGTERM: it destroys every clone first.
+    if ((JAILER)); then
+      # sandboxd is root's: the signal goes through sudo (refresh the
+      # login first, so a long talk does not make it ask mid-way).
+      if [[ -t 0 ]]; then sudo -v || true; fi
+      if ! sudo -n kill -TERM "${DAEMON_PID}" 2> /dev/null; then
+        echo "${R}demo1: could not stop the daemon; stop it yourself with:${N}" >&2
+        echo "    sudo kill -TERM ${DAEMON_PID}" >&2
+        DAEMON_PID=""
+        return 1
+      fi
+    else
+      kill -TERM "${DAEMON_PID}" 2> /dev/null || true
+    fi
+    # It takes at most 10 s (daemon.ShutdownTimeout); allow a little more.
     for _ in $(seq 150); do
-      kill -0 "${DAEMON_PID}" 2> /dev/null || break
+      daemon_alive || break
       sleep 0.1
     done
   fi
-  wait "${DAEMON_PID}" 2> /dev/null || true
+  if daemon_alive; then
+    echo "${R}demo1: the daemon (pid ${DAEMON_PID}) did not stop within 15 s; stop it with:${N}" >&2
+    if ((JAILER)); then echo "    sudo kill -KILL ${DAEMON_PID}" >&2; else echo "    kill -KILL ${DAEMON_PID}" >&2; fi
+    DAEMON_PID=""
+    return 1
+  fi
+  wait "${DAEMON_PID}" 2> /dev/null || true # it has exited: this only collects it
   DAEMON_PID=""
 }
-trap 'stop_daemon; rm -f "${LOG}"' EXIT
+trap 'stop_daemon || true; rm -f "${LOG}"' EXIT
 
 clear 2> /dev/null || true
 cat << EOF
@@ -156,12 +192,14 @@ else
   bin/sandboxd serve --state-dir "${STATE}" > "${LOG}" 2>&1 &
 fi
 DAEMON_PID=$!
-for _ in $(seq 100); do
-  [[ -S "${SOCKET}" ]] && break
-  kill -0 "${DAEMON_PID}" 2> /dev/null || break
+# Wait until it answers: opening the store hashes every snapshot file
+# first, which takes a few seconds on a slow disk.
+for _ in $(seq 600); do
+  daemon_answers && break
+  daemon_alive || break
   sleep 0.1
 done
-[[ -S "${SOCKET}" ]] || { cat "${LOG}" >&2; die "the daemon did not start"; }
+daemon_answers || { cat "${LOG}" >&2; die "the daemon did not start (its log is above)"; }
 sed 's/^/   /' "${LOG}"
 show "ls -l ${SOCKET}"
 
@@ -210,8 +248,12 @@ show "tail -n 1 ${STATE}/audit/audit.jsonl | cut -c 1-300; echo ..."
 
 step "Stop the daemon" \
   "SIGTERM: no new runs, running ones are stopped, every clone destroyed, the audit log closed, the socket removed."
-echo "${Y}\$ kill -TERM <sandboxd>${N}"
-stop_daemon
+if ((JAILER)); then
+  echo "${Y}\$ sudo kill -TERM ${DAEMON_PID}   # sudo passes it on to sandboxd${N}"
+else
+  echo "${Y}\$ kill -TERM ${DAEMON_PID}${N}"
+fi
+stop_daemon || die "the daemon did not stop"
 sed 's/^/   /' "${LOG}" | tail -n 3
 
 step "Nothing left behind" \
@@ -222,10 +264,12 @@ pgrep -x firecracker > /dev/null && left=1
 show "ls -A ${STATE}/runs; echo '(runs/ is empty)'"
 [[ -z "$(ls -A "${STATE}/runs")" ]] || left=1
 if ((JAILER)); then
-  # The jailer keeps the shared parent folder jail/firecracker/; each
-  # clone's own jail inside it must be gone.
-  show "ls -A ${STATE}/jail/firecracker 2> /dev/null; echo '(no jails left)'"
-  [[ -z "$(ls -A "${STATE}/jail/firecracker" 2> /dev/null)" ]] || left=1
+  # The jailer keeps the shared parent folder jail/firecracker/ (root's,
+  # mode 0700, so only root can look inside); each clone's own jail in it
+  # must be gone.
+  show "sudo -n find ${STATE}/jail -mindepth 2 -maxdepth 2; echo '(no jails left)'"
+  jails="$(sudo -n find "${STATE}/jail" -mindepth 2 -maxdepth 2 2> /dev/null)" || jails="(could not look: sudo)"
+  [[ -z "${jails}" ]] || left=1
   show "ls /sys/fs/cgroup/microvm 2> /dev/null || echo 'no microvm cgroups'"
   [[ -d /sys/fs/cgroup/microvm && -n "$(find /sys/fs/cgroup/microvm -mindepth 1 -maxdepth 1 -type d)" ]] && left=1
 fi
