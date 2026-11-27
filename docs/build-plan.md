@@ -150,7 +150,7 @@ The scope change above, in two parts, two branches and two pull requests, **merg
 | Week | Hours | Notes |
 |------|-------|-------|
 | 0 | | |
-| 4b-A | 1.2 | The demo page (`sandboxctl ui`), wall-clock time of the build in two sittings (2026-11-25 08:29–09:01, 2026-11-27 18:56–19:35), checks and the sample recording included; within the 12 h budget of part A, so the week-11 items stay |
+| 4b-A | 1.0 | The demo page (`sandboxctl ui`), wall-clock time of the build in two sittings (2026-11-25 08:29–09:01, 2026-11-27 18:56–19:25), checks and the sample recording included; within the 12 h budget of part A, so the week-11 items stay |
 
 ## Later (after the freeze)
 - Anchor the audit log's newest hash outside the file (for example in a second file root keeps, or a remote log), so removing the newest records or rewriting the whole chain is detected too (threat model T11)
