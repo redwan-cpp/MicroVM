@@ -38,7 +38,7 @@ TOOLS              := $(GOLANGCI_LINT) $(BUF) $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_G
 GEN_DIR := internal/gen
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint breaking fmt generate generate-check tools firecracker guest snapshots boot demo demo1 e2e e2e-jailer bench clean
+.PHONY: help build test lint breaking fmt generate generate-check tools firecracker guest snapshots boot demo demo1 demo-ui e2e e2e-jailer bench clean
 
 help: ## Show this list
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -151,6 +151,14 @@ demo: ## Live demo, step by step (press Enter between steps)
 # with sudo.
 demo1: ## Demo 1: three clones at once through sandboxd, step by step (rootless; see scripts/demo1.sh --jailer)
 	./scripts/demo1.sh
+
+# The demo page (sandboxctl ui) in a browser: it builds as you, starts
+# sandboxd, serves the page on 127.0.0.1:8090 and prints its address;
+# Ctrl-C stops both. ARGS='--jailer' runs only the daemon with sudo;
+# ARGS='--record FILE' records the session (sandboxctl ui export makes
+# one HTML file of it).
+demo-ui: ## The demo page in a browser, rootless (ARGS='--jailer', ARGS='--record FILE')
+	./scripts/demo-ui.sh $(ARGS)
 
 # They need KVM and the guest image, so they never run in GitHub CI (CI only
 # checks that they compile, through `make lint`).

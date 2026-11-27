@@ -283,3 +283,5 @@ show "ls -l ${SOCKET} 2> /dev/null || echo 'no socket'"
 
 echo
 echo "${G}${B}Demo 1 done (${MODE} mode): three clones at once, private writes, nothing left behind.${N}"
+echo "${D}The same in a browser, with the clones' phases, the host's view and the audit chain on one page:${N}"
+echo "${D}    make demo-ui   (scripts/demo-ui.sh --jailer for jailer mode)${N}"
