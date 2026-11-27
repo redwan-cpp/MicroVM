@@ -310,3 +310,69 @@ func TestVersion(t *testing.T) {
 		t.Errorf("version: exit %d, %q", code, stdout)
 	}
 }
+
+func TestListenLoopbackOnly(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:0", "192.168.1.10:0", "example.com:0", ":::0", "127.0.0.1", "nonsense"} {
+		if lis, err := listenLoopback(addr); err == nil {
+			_ = lis.Close()
+			t.Errorf("listenLoopback(%q) listened", addr)
+		}
+	}
+	for _, addr := range []string{"127.0.0.1:0", "localhost:0", ":0"} {
+		lis, err := listenLoopback(addr)
+		if err != nil {
+			t.Errorf("listenLoopback(%q): %v", addr, err)
+			continue
+		}
+		if !strings.HasPrefix(lis.Addr().String(), "127.0.0.1:") {
+			t.Errorf("listenLoopback(%q) listens on %v", addr, lis.Addr())
+		}
+		_ = lis.Close()
+	}
+}
+
+func TestUICommand(t *testing.T) {
+	// Without a daemon it says so, before it serves anything.
+	code, _, stderr := sandboxctl(t, "", map[string]string{SocketEnv: "/nonexistent/s.sock"}, "ui", "--listen", "127.0.0.1:0")
+	if code != 1 || !strings.Contains(stderr, "sandboxd is not running") {
+		t.Errorf("ui without a daemon: exit %d, %q", code, stderr)
+	}
+	if code, _, stderr := sandboxctl(t, "", nil, "ui", "--listen", "0.0.0.0:8090"); code != exitUsage || !strings.Contains(stderr, "loopback") {
+		t.Errorf("ui on all interfaces: exit %d, %q", code, stderr)
+	}
+	if code, _, _ := sandboxctl(t, "", nil, "ui", "--replay", "a", "--record", "b"); code != exitUsage {
+		t.Errorf("ui --replay with --record: exit %d", code)
+	}
+
+	// export: a recording becomes one HTML file, never over another.
+	dir := t.TempDir()
+	session := filepath.Join(dir, "s.jsonl")
+	if err := os.WriteFile(session, []byte(`{"meta":{"format":"microvm-sandbox-session","version":1,"created_at":"2026-11-25T09:30:00Z",`+
+		`"ui_version":"test","info":{"mode":"rootless","daemon_version":"d","firecracker_version":"v1.17.0","arch":"x86_64",`+
+		`"max_concurrent":4,"max_pending":64,"host_kind":"physical","host_detail":"","classes":[],"max_clones":4,"ui_version":"test"}}}`+"\n"+
+		`{"end":{"ended_at":"2026-11-25T09:31:00Z","verify":{"ok":true,"records":0}}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "demo.html")
+	code, stdout, stderr := sandboxctl(t, "", nil, "ui", "export", "--from", session, "--out", out)
+	if code != 0 || !strings.Contains(stdout, "self-contained") {
+		t.Fatalf("export: exit %d, %q %q", code, stdout, stderr)
+	}
+	page, err := os.ReadFile(out) //nolint:gosec // G304: the test's own file
+	if err != nil || !bytes.Contains(page, []byte("RECORDING, not live.")) {
+		t.Errorf("the export: %v", err)
+	}
+	if code, _, stderr := sandboxctl(t, "", nil, "ui", "export", "--from", session, "--out", out); code != 1 || !strings.Contains(stderr, "exists already") {
+		t.Errorf("a second export: exit %d, %q", code, stderr)
+	}
+	if code, _, _ := sandboxctl(t, "", nil, "ui", "export"); code != exitUsage {
+		t.Errorf("export without --from: exit %d", code)
+	}
+	bad := filepath.Join(dir, "bad.jsonl")
+	if err := os.WriteFile(bad, []byte(`{"live":true}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := sandboxctl(t, "", nil, "ui", "export", "--from", bad); code != 1 || !strings.Contains(stderr, "unknown field") {
+		t.Errorf("export of a file that is not a recording: exit %d, %q", code, stderr)
+	}
+}

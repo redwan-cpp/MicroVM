@@ -6,6 +6,8 @@
 //	sandboxctl ps [--all] [RUN_ID]          active (and recent) runs
 //	sandboxctl logs RUN_ID                  the output kept of a run
 //	sandboxctl audit verify                 check the audit log's hash chain
+//	sandboxctl ui [--record FILE]           the demo page, in a browser (internal/ui)
+//	sandboxctl ui --replay FILE | export    play back, or export, a recording
 //	sandboxctl version
 //
 // `sandboxctl run` exits with the command's own exit code; with 124 if it
@@ -71,6 +73,8 @@ const usage = `usage: sandboxctl [--socket PATH] COMMAND ...
   ps [--all] [RUN_ID]          active runs (--all: recent ones too), or one run in detail
   logs RUN_ID                  the output the daemon kept of a run
   audit verify [--state-dir D] check the audit log's hash chain (reads the file itself)
+  ui [--record FILE]           the demo page in a browser, on 127.0.0.1 (ui -h for the rest)
+  ui --replay FILE             play back a recording;  ui export --from FILE: one HTML file
   version                      print the version
 
 The socket: --socket, else $SANDBOXD_SOCKET, else $XDG_RUNTIME_DIR/sandboxd/sandboxd.sock
@@ -101,6 +105,8 @@ func cli(args []string, e env) int {
 		return c.logs(rest)
 	case "audit":
 		return auditCmd(rest, e)
+	case "ui":
+		return c.uiCmd(rest)
 	case "version":
 		e.outln(version.String("sandboxctl"))
 		return 0

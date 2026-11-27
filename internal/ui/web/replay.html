@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--CSP-->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title><!--TITLE--></title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="is-replay">
+<div class="recording-banner" id="recording-banner" role="status">
+  <strong>RECORDING, not live.</strong>
+  <span id="rec-when">A recorded session of sandboxctl ui.</span>
+  <span id="rec-where"></span>
+  <span class="rec-speed" id="rec-speed"></span>
+</div>
+<header class="top">
+  <div class="title-row">
+    <h1>MicroVM Sandbox</h1>
+    <span class="badge badge-recording">RECORDING</span>
+  </div>
+  <div class="facts" id="facts"></div>
+</header>
+<main id="app"></main>
+<footer class="foot">Research and teaching project, not security audited. This page plays back a recording; it runs nothing.</footer>
+<!--SESSION-->
+<script src="app.js"></script>
+<script src="player.js"></script>
+</body>
+</html>
