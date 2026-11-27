@@ -1,6 +1,6 @@
 # ADR-0002: gRPC for the CLI↔daemon and daemon↔agent APIs
 
-- **Status:** Accepted; amended by [ADR-0006](0006-daemon-socket-and-state-ownership.md) (2026-11-24): the socket is `$XDG_RUNTIME_DIR/sandboxd/sandboxd.sock` in rootless mode, `/run/sandboxd/sandboxd.sock` in jailer mode
+- **Status:** Accepted; amended by [ADR-0006](0006-daemon-socket-and-state-ownership.md) (2026-11-24): the socket is `$XDG_RUNTIME_DIR/sandboxd/sandboxd.sock` in rootless mode, `/run/sandboxd/sandboxd.sock` in jailer mode; and by [ADR-0007](0007-local-demo-ui-over-http-and-sse.md) (2026-11-27): the demo page talks HTTP and Server-Sent Events to `sandboxctl ui`, which is an ordinary gRPC client of the daemon
 - **Date:** 2026-11-04
 
 ## Context

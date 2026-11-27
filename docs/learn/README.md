@@ -62,7 +62,7 @@ New rows get added as you reach new topics.
 7. [08 · The guest agent and vsock](08-guest-vsock-agent.md): commands in, output out, and why the host trusts nothing it hears
 8. [09 · Snapshots and copy-on-write](09-snapshots-and-cow.md): save a booted VM once, restore it in milliseconds, and de-twin every clone
 9. [10 · The jailer](10-the-jailer.md): chroot, UID drop and cgroups around each Firecracker, and why nothing is built as root
-10. [11 · The daemon and the life of one run](11-the-daemon-and-a-run.md): the socket, the state machine, `/work`, and the hash-chained audit log
+10. [11 · The daemon and the life of one run](11-the-daemon-and-a-run.md): the socket, the state machine, `/work`, the hash-chained audit log, and the demo page (`make demo-ui`)
 
 Docs 05 (KVM) and 07 (reading Go code) come in a separate docs pass.
 

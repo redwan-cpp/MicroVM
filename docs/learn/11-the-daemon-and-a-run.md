@@ -1,7 +1,7 @@
 # 11 · The daemon and the life of one run
 
-> ⏱ 15 minutes
-> **After this, you can explain:** what happens between typing `sandboxctl run` and getting your prompt back, why every run ends the same way whatever goes wrong, and how the audit log shows that nobody changed it afterwards.
+> ⏱ 20 minutes
+> **After this, you can explain:** what happens between typing `sandboxctl run` and getting your prompt back, why every run ends the same way whatever goes wrong, how the audit log shows that nobody changed it afterwards, and what the demo page shows and why it is locked.
 
 ---
 
@@ -82,7 +82,22 @@ The log **fails closed**. If the chain is broken when the daemon starts, it refu
 - **The daemon is stopped** (SIGTERM, Ctrl-C): it accepts no new runs, stops the running ones (each still destroyed and recorded), closes the log and removes its socket, within 10 seconds. In jailer mode it also removes the two folders the jailer made as root around every clone, `jail/firecracker/` and the cgroup `microvm/`, once they are empty, so a clean run leaves nothing of root's behind. That bound is firm: a run still in STOPPING when it runs out (a clone that will not die, say) can lose its audit record, because the log is closed under it. The daemon logs that loudly ("runs still stopping", "AUDIT RECORD NOT WRITTEN"), and its exit code says the shutdown failed.
 - **The daemon crashes**: in rootless mode the kernel kills every Firecracker it started (the parent-death signal, doc 10). In jailer mode that signal is gone, and a chroot or cgroup may stay behind; the **reconciler** in week 7 cleans those up when the daemon starts again. What the daemon keeps in memory, the last 100 runs and their output for `ps` and `logs`, is gone after a restart; the audit log is what lasts.
 
-## 7. Try it
+## 7. The window with a view: the demo page
+
+Typing commands in front of an audience is slow and hard to follow. `sandboxctl ui` is a **web page** for showing all of the above: the presenter clicks a button, and everyone watches the clones go through their states.
+
+```
+browser ──HTTP + SSE──→ sandboxctl ui ──gRPC, the same socket──→ sandboxd ──→ clones
+ (shows)                 (asks and relays)                         (does the work)
+```
+
+- The page talks to `sandboxctl ui` over **HTTP**, because a browser cannot open the daemon's Unix socket or speak gRPC there ([ADR-0007](../adr/0007-local-demo-ui-over-http-and-sse.md)). A button sends a small JSON request; everything that happens comes back over **Server-Sent Events**: one long answer that sends a line of JSON for each event (a state change, output, a result), as it happens.
+- `sandboxctl ui` is just another client of the daemon, like `sandboxctl run`: it asks for runs with `Run`, and for the panels it asks `Info` (versions, the mode, the cold boot of each snapshot), `List` (the history) and `HostStats` (how many Firecracker processes, run folders, jails and cgroups exist, and each clone's memory). It never starts a VM itself, and the audit log names the user who started it as the caller.
+- **RSS and PSS**, in the host panel: RSS counts every page a process has in memory; PSS splits a page shared by n processes into n parts. Clones share the snapshot's memory file (doc 09), so their PSS adds up to much less than their RSS. That is copy-on-write, measured.
+- **It is a door, so it has a lock.** The page is served only on `127.0.0.1`, and only to a browser that opened the address printed with a random **token** (kept as a cookie afterwards). It refuses requests addressed to any other name (a trick called DNS rebinding) and changes from any other page (cross-site requests). Guest output is shown only as plain text, never as markup, so a command that prints `<script>` gets its text shown, nothing more (threat model T13).
+- **Record, replay, export.** `--record FILE` keeps every event the page got, with its time. `--replay FILE` plays it back with the original timing and needs no daemon; `sandboxctl ui export` makes one HTML file of it that opens offline anywhere. A replay always says **RECORDING**, and when and on what kind of machine it was made: a recording is evidence, not a live demo, and each run's audit hash ties it to the log of the machine that made it.
+
+## 8. Try it
 
 ```bash
 make demo1
@@ -100,7 +115,12 @@ bin/sandboxctl audit verify && tail -n 1 guest/out/state/audit/audit.jsonl
 ```
 👀 The chain checked, and the newest record: the run, its states, its `prev_hash` and `hash`.
 
-## 8. In our project
+```bash
+make demo-ui
+```
+👀 Open the address it prints, click "Three clones, private /work": three lanes fill at once, the host panel counts three Firecrackers (PSS well below RSS), then drops back to "0 VMs, 0 folders left"; the audit panel shows three new records, each pointing at the one before.
+
+## 9. In our project
 
 | Piece | Where |
 |-------|-------|
@@ -112,8 +132,9 @@ bin/sandboxctl audit verify && tail -n 1 guest/out/state/audit/audit.jsonl
 | Mounting `/work` in the guest | `internal/agent` (`scratch.go`) |
 | The CLI | `cmd/sandboxctl` |
 | Demo 1, as a test | `test/e2e/daemon_test.go`, `test/e2e/jailer_test.go` |
+| The demo page | `internal/ui` (server, recorder, export), `internal/ui/web` (the page), `cmd/sandboxctl/ui.go`, `test/e2e/ui_test.go` |
 
-## 9. Check yourself
+## 10. Check yourself
 
 <details><summary>1. You press Ctrl-C while your command runs. What happens to the clone?</summary>
 
@@ -130,7 +151,12 @@ Yes: run 6's `prev_hash` still holds run 5's old hash, so the chain breaks at ru
 The memory file is mapped copy-on-write: clones share it but their writes stay private in memory. A disk file is written in place, so a shared one would let one clone read another's files.
 </details>
 
-## 10. New words
+<details><summary>4. A web page you visit tries to send a request to the demo page on 127.0.0.1:8090. What stops it?</summary>
+
+It has no token (the cookie is HttpOnly and SameSite=Strict, so another site's request does not carry it), its `Origin` is not the demo page's, and if it renamed itself to resolve to 127.0.0.1 its `Host` header would still carry its own name. Any one of these makes the server refuse it.
+</details>
+
+## 11. New words
 
 | Word | Meaning |
 |------|---------|
@@ -141,5 +167,8 @@ The memory file is mapped copy-on-write: clones share it but their writes stay p
 | Hash chain | Records that each carry a fingerprint of the one before |
 | Fail closed | When something breaks, stop instead of carrying on unchecked |
 | SO_PEERCRED | The kernel's answer to "who is at the other end of this socket?" |
+| Server-Sent Events (SSE) | One long HTTP answer in which the server sends a line for each event, as it happens |
+| RSS / PSS | A process's memory: every page it holds (RSS), or its fair share of pages it shares with others (PSS) |
+| Token | A long random secret; whoever has it may use the page |
 
 **Next:** 12 · policies (week 5): what a run may ask for, and how the daemon says no.
