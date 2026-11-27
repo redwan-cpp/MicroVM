@@ -13,7 +13,15 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Every check on both architectures the project builds for: x86_64
+    # (ubuntu-latest) and arm64, aarch64 to the kernel (ubuntu-24.04-arm).
+    # Neither runner has KVM, so the e2e tests only compile (make lint
+    # vets them), as before.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -28,11 +36,12 @@ jobs:
       # The pinned tools (golangci-lint, buf, protoc plugins) take minutes to
       # build. Keep bin/tools between runs; the pins live in the Makefile, so
       # a new pin means a new cache. The tools are built with the Go version
-      # in go.mod, so a new Go version means a new cache too.
+      # in go.mod, so a new Go version means a new cache too. They are
+      # programs for one architecture, so each has its own cache.
       - uses: actions/cache@v6
         with:
           path: bin/tools
-          key: tools-${{ runner.os }}-${{ hashFiles('Makefile', 'go.mod') }}
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'go.mod') }}
       - run: make lint
       - run: make test
       - run: make build
