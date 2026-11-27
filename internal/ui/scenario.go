@@ -49,13 +49,14 @@ var scenarios = []scenario{
 	},
 	{
 		// Each f starts two more and waits for them, so the processes
-		// double without end. Left alone it fills the guest's process
-		// table and memory in one to three seconds (then the shell gives
-		// up, or the guest's OOM killer may take the agent with it: the
-		// run fails, still inside the clone). The 1 s timeout comes
-		// first.
-		id: "forkbomb", title: "Fork bomb hits the timeout",
-		caption: "Each process starts two more, without end. The host's own clock stops it at its 1 s timeout and destroys the clone; in the clone it only ever had the guest's own vCPU and memory.",
+		// double without end, and fill the guest's task table and memory
+		// within a second or two. Mostly (9 runs in 10 on the dev
+		// machine) the 1 s timeout comes first: TIMED_OUT. Sometimes the
+		// guest runs out first and the agent dies with it (out of memory,
+		// or unable to start a thread): the run FAILED, as the host
+		// judges it. Either way the clone is destroyed.
+		id: "forkbomb", title: "Fork bomb is stopped",
+		caption: "Each process starts two more, without end. The host's own clock stops it at its 1 s timeout (timed out); if the guest runs out of processes or memory first, its agent dies with it (failed). Either way the host destroys the clone: the bomb only ever had the guest's own vCPU and memory.",
 		clones:  1, timeout: time.Second,
 		argv: func(int) []string { return []string{"sh", "-c", "f() { f | f; }; f"} },
 	},

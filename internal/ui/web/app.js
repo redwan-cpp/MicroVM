@@ -884,7 +884,7 @@
     scenarios: [
       { id: 'demo1', title: 'Three clones, private /work' },
       { id: 'hostile', title: 'Hostile code stays inside' },
-      { id: 'forkbomb', title: 'Fork bomb hits the timeout' },
+      { id: 'forkbomb', title: 'Fork bomb is stopped' },
       { id: 'flood', title: 'Output flood hits the cap' },
     ],
   };

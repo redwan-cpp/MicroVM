@@ -88,7 +88,7 @@ The scope change above, in two parts, two branches and two pull requests, **merg
 - [x] `make demo-ui` (`scripts/demo-ui.sh [--jailer] [--record FILE]`); the UI flow in `make e2e` (`TestDemoUI`); CI on x86_64 and arm64
 - [x] ADR-0007, threat model (boundary 5, T13), the UI section in learning doc 11, README "Showing the demo", CHANGELOG
 - [ ] `scripts/demo-ui.sh --jailer`, by the user (it needs sudo; here only its build-and-explain path without root was checked)
-- Found while building it, on the "Later" list: an output flood that never ends runs until its timeout (the honest agent stops sending at the cap and keeps the command running, and the host waits); a fork bomb left to run can make the guest's OOM killer end the agent (the run fails, contained in the clone). The page's flood writes 50 MB and ends, and its fork bomb has a 1 s timeout
+- Found while building it, on the "Later" list: an output flood that never ends runs until its timeout (the honest agent stops sending at the cap and keeps the command running, and the host waits); a fork bomb can take the guest agent down with it within a second (out of memory, or unable to start a thread; about 1 run in 10 at a 1 s or a 0.5 s timeout): the run FAILED instead of TIMED_OUT, still contained in the clone. The page's flood writes 50 MB and ends; its fork bomb has a 1 s timeout and is captioned for both outcomes
 
 **Part B: macOS on Apple Silicon (branch `macos-apple-silicon`)**: its checklist comes with that branch; it starts with the B0 feasibility spike on the user's M4.
 
@@ -163,6 +163,6 @@ The scope change above, in two parts, two branches and two pull requests, **merg
 - Our own minimal guest kernel config
 - Stage 2 multi-host prototype (worker registry and scheduler)
 - Stop a never-ending output flood at its cap: with an honest agent (which sends exactly the cap, then drops the rest and keeps the command running) the host keeps waiting, so the run ends only at its timeout (TIMED_OUT, `output_truncated` set) instead of OUTPUT_TRUNCATED; `agentclient` would stop the call once the cap is full (week 4b finding)
-- Keep the guest agent out of the guest's OOM killer's reach (`oom_score_adj`), so a fork bomb left to run ends TIMED_OUT, not with a killed agent (FAILED; still contained in the clone) (week 4b finding)
+- Keep the guest agent alive under a fork bomb (out of the OOM killer's reach with `oom_score_adj`, and able to start its threads, or the command's processes limited), so the run ends TIMED_OUT, not with a dead agent (FAILED; still contained in the clone) (week 4b finding)
 - Serve the demo page to other machines (`--allow-remote`), dropped from 4b: a remote audience gets an exported recording
 - The demo page for runs started elsewhere in real time (today they appear in its history within a second, without their output)
