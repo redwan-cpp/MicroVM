@@ -326,3 +326,75 @@ func TestRecordJSONNames(t *testing.T) {
 		t.Errorf("a run without an exit has exit_code: %s", data)
 	}
 }
+
+func TestTail(t *testing.T) {
+	dir := writeChain(t, 5)
+	lines := readLines(t, dir)
+	var want []envelope
+	for _, l := range lines {
+		var env envelope
+		if err := json.Unmarshal(l, &env); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, env)
+	}
+	got, err := Tail(Path(dir), 3)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("Tail(3) = %v, %v", got, err)
+	}
+	for i, e := range got {
+		w := want[2+i]
+		if e.Hash != w.Hash || e.PrevHash != w.PrevHash || e.Kind != KindRun || e.RunID != fmt.Sprintf("r-%016d", 2+i) ||
+			e.Outcome != "EXITED" || e.FinalState != "DONE" || e.Time.IsZero() {
+			t.Errorf("entry %d = %+v, want line %d", i, e, 3+i)
+		}
+	}
+	// Each entry's prev_hash is the hash of the one before: the chain.
+	if got[1].PrevHash != got[0].Hash || got[2].PrevHash != got[1].Hash {
+		t.Errorf("the entries do not chain: %+v", got)
+	}
+	if all, err := Tail(Path(dir), 50); err != nil || len(all) != 5 || all[0].PrevHash != ZeroHash {
+		t.Errorf("Tail(50) of 5 records = %d entries, %v", len(all), err)
+	}
+	if none, err := Tail(filepath.Join(t.TempDir(), "missing.jsonl"), 3); err != nil || none != nil {
+		t.Errorf("Tail of a missing log = %v, %v", none, err)
+	}
+
+	// A line still being written (no newline yet) is left out.
+	f, err := os.OpenFile(Path(dir), os.O_APPEND|os.O_WRONLY, 0) //nolint:gosec // G304: the test's own log
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"record":{"kind":"run"`)
+	_ = f.Close()
+	if got, err := Tail(Path(dir), 1); err != nil || len(got) != 1 || got[0].RunID != "r-0000000000000004" {
+		t.Errorf("Tail with a half-written line = %+v, %v", got, err)
+	}
+}
+
+func TestTailReadsOnlyTheEnd(t *testing.T) {
+	// Many records, each bigger than a block: Tail still finds the last
+	// two, and a garbage line keeps its place with no kind.
+	dir := filepath.Join(t.TempDir(), DirName)
+	l, err := Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		r := runRecord(fmt.Sprintf("r-%016d", i))
+		r.Run.Argv = []string{strings.Repeat("x", 100<<10)}
+		if err := l.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = l.Close()
+	got, err := Tail(Path(dir), 2)
+	if err != nil || len(got) != 2 || got[0].RunID != "r-0000000000000018" || got[1].RunID != "r-0000000000000019" {
+		t.Fatalf("Tail(2) = %+v, %v", got, err)
+	}
+	lines := readLines(t, dir)
+	writeLines(t, dir, append(lines, []byte("not json\n")))
+	if got, err := Tail(Path(dir), 2); err != nil || len(got) != 2 || got[0].RunID != "r-0000000000000019" || got[1].Kind != "" {
+		t.Errorf("Tail with a garbage line = %+v, %v", got, err)
+	}
+}
